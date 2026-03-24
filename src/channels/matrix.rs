@@ -586,7 +586,7 @@ impl MatrixChannel {
         if client.encryption().backups().are_enabled().await {
             tracing::info!("Matrix room-key backup is enabled for this device.");
         } else {
-            client.encryption().backups().disable().await;
+            let _ = client.encryption().backups().disable().await;
             tracing::warn!(
                 "Matrix room-key backup is not enabled for this device; automatic backup attempts have been disabled to suppress recurring warnings. To enable backups, configure server-side key backup and recovery for this device."
             );
@@ -974,6 +974,7 @@ impl Channel for MatrixChannel {
                         .as_secs(),
                     thread_ts: thread_ts.clone(),
                     interruption_scope_id: thread_ts,
+                    attachments: vec![],
                 };
 
                 let _ = tx.send(msg).await;

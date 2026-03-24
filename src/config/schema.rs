@@ -261,6 +261,10 @@ pub struct Config {
     #[serde(default)]
     pub multimodal: MultimodalConfig,
 
+    /// Automatic media understanding pipeline (`[media_pipeline]`).
+    #[serde(default)]
+    pub media_pipeline: MediaPipelineConfig,
+
     /// Web fetch tool configuration (`[web_fetch]`).
     #[serde(default)]
     pub web_fetch: WebFetchConfig,
@@ -387,6 +391,22 @@ pub struct Config {
     /// Claude Code tool configuration (`[claude_code]`).
     #[serde(default)]
     pub claude_code: ClaudeCodeConfig,
+
+    /// Codex CLI tool configuration (`[codex_cli]`).
+    #[serde(default)]
+    pub codex_cli: CodexCliConfig,
+
+    /// Gemini CLI tool configuration (`[gemini_cli]`).
+    #[serde(default)]
+    pub gemini_cli: GeminiCliConfig,
+
+    /// OpenCode CLI tool configuration (`[opencode_cli]`).
+    #[serde(default)]
+    pub opencode_cli: OpenCodeCliConfig,
+
+    /// Standard Operating Procedures engine configuration (`[sop]`).
+    #[serde(default)]
+    pub sop: SopConfig,
 }
 
 /// Multi-client workspace isolation configuration.
@@ -1211,7 +1231,7 @@ pub struct GoogleSttConfig {
 
 /// Local/self-hosted Whisper-compatible STT endpoint (`[transcription.local_whisper]`).
 ///
-/// Audio is sent over WireGuard; never leaves the platform perimeter.
+/// Configures a self-hosted STT endpoint. Can be on localhost, a private network host, or any reachable URL.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LocalWhisperConfig {
     /// HTTP or HTTPS endpoint URL, e.g. `"http://10.10.0.1:8001/v1/transcribe"`.
@@ -1328,7 +1348,7 @@ impl Default for AgentConfig {
 /// All fields are optional and default to values that preserve existing
 /// behavior. When set, they extend — not replace — the existing timeout
 /// and loop-detection subsystems.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PacingConfig {
     /// Per-step timeout in seconds: the maximum time allowed for a single
     /// LLM inference turn, independent of the total message budget.
@@ -1356,6 +1376,47 @@ pub struct PacingConfig {
     /// receive a proportionally larger budget without inflating the base timeout.
     #[serde(default)]
     pub message_timeout_scale_max: Option<u64>,
+
+    /// Enable pattern-based loop detection (exact repeat, ping-pong,
+    /// no-progress). Defaults to `true`.
+    #[serde(default = "default_loop_detection_enabled")]
+    pub loop_detection_enabled: bool,
+
+    /// Sliding window size for the pattern-based loop detector.
+    /// Defaults to 20.
+    #[serde(default = "default_loop_detection_window_size")]
+    pub loop_detection_window_size: usize,
+
+    /// Number of consecutive identical tool+args calls before the first
+    /// escalation (Warning). Defaults to 3.
+    #[serde(default = "default_loop_detection_max_repeats")]
+    pub loop_detection_max_repeats: usize,
+}
+
+fn default_loop_detection_enabled() -> bool {
+    true
+}
+
+fn default_loop_detection_window_size() -> usize {
+    20
+}
+
+fn default_loop_detection_max_repeats() -> usize {
+    3
+}
+
+impl Default for PacingConfig {
+    fn default() -> Self {
+        Self {
+            step_timeout_secs: None,
+            loop_detection_min_elapsed_secs: None,
+            loop_ignore_tools: Vec::new(),
+            message_timeout_scale_max: None,
+            loop_detection_enabled: default_loop_detection_enabled(),
+            loop_detection_window_size: default_loop_detection_window_size(),
+            loop_detection_max_repeats: default_loop_detection_max_repeats(),
+        }
+    }
 }
 
 /// Skills loading configuration (`[skills]` section).
@@ -1478,6 +1539,44 @@ impl Default for MultimodalConfig {
     }
 }
 
+// ── Media Pipeline ──────────────────────────────────────────────
+
+/// Automatic media understanding pipeline configuration (`[media_pipeline]`).
+///
+/// When enabled, inbound channel messages with media attachments are
+/// pre-processed before reaching the agent: audio is transcribed, images are
+/// annotated, and videos are summarised.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MediaPipelineConfig {
+    /// Master toggle for the media pipeline (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Transcribe audio attachments using the configured transcription provider.
+    #[serde(default = "default_true")]
+    pub transcribe_audio: bool,
+
+    /// Add image descriptions when a vision-capable model is active.
+    #[serde(default = "default_true")]
+    pub describe_images: bool,
+
+    /// Summarize video attachments (placeholder — requires external API).
+    #[serde(default = "default_true")]
+    pub summarize_video: bool,
+}
+
+impl Default for MediaPipelineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            transcribe_audio: true,
+            describe_images: true,
+            summarize_video: true,
+        }
+    }
+}
+
 // ── Identity (AIEOS / OpenClaw format) ──────────────────────────
 
 /// Identity format configuration (`[identity]` section).
@@ -1515,8 +1614,8 @@ impl Default for IdentityConfig {
 /// Cost tracking and budget enforcement configuration (`[cost]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CostConfig {
-    /// Enable cost tracking (default: false)
-    #[serde(default)]
+    /// Enable cost tracking (default: true)
+    #[serde(default = "default_cost_enabled")]
     pub enabled: bool,
 
     /// Daily spending limit in USD (default: 10.00)
@@ -1564,10 +1663,14 @@ fn default_warn_percent() -> u8 {
     80
 }
 
+fn default_cost_enabled() -> bool {
+    true
+}
+
 impl Default for CostConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             daily_limit_usd: default_daily_limit(),
             monthly_limit_usd: default_monthly_limit(),
             warn_at_percent: default_warn_percent(),
@@ -2240,6 +2343,61 @@ pub struct WebFetchConfig {
     /// Request timeout in seconds (default: 30)
     #[serde(default = "default_web_fetch_timeout_secs")]
     pub timeout_secs: u64,
+    /// Firecrawl fallback configuration (`[web_fetch.firecrawl]`)
+    #[serde(default)]
+    pub firecrawl: FirecrawlConfig,
+}
+
+/// Firecrawl fallback mode: scrape a single page or crawl linked pages.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FirecrawlMode {
+    #[default]
+    Scrape,
+    /// Reserved for future multi-page crawl support. Accepted in config
+    /// deserialization to avoid breaking existing files, but not yet
+    /// implemented — `fetch_via_firecrawl` always uses the `/scrape` endpoint.
+    Crawl,
+}
+
+/// Firecrawl fallback configuration for JS-heavy and bot-blocked sites.
+///
+/// When enabled, if the standard web fetch fails (HTTP error, empty body, or
+/// body shorter than 100 characters suggesting a JS-only page), the tool
+/// falls back to the Firecrawl API for stealth content extraction.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FirecrawlConfig {
+    /// Enable Firecrawl fallback
+    #[serde(default)]
+    pub enabled: bool,
+    /// Environment variable name for the Firecrawl API key
+    #[serde(default = "default_firecrawl_api_key_env")]
+    pub api_key_env: String,
+    /// Firecrawl API base URL
+    #[serde(default = "default_firecrawl_api_url")]
+    pub api_url: String,
+    /// Firecrawl extraction mode
+    #[serde(default)]
+    pub mode: FirecrawlMode,
+}
+
+fn default_firecrawl_api_key_env() -> String {
+    "FIRECRAWL_API_KEY".into()
+}
+
+fn default_firecrawl_api_url() -> String {
+    "https://api.firecrawl.dev/v1".into()
+}
+
+impl Default for FirecrawlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key_env: default_firecrawl_api_key_env(),
+            api_url: default_firecrawl_api_url(),
+            mode: FirecrawlMode::default(),
+        }
+    }
 }
 
 fn default_web_fetch_max_response_size() -> usize {
@@ -2262,6 +2420,7 @@ impl Default for WebFetchConfig {
             blocked_domains: vec![],
             max_response_size: default_web_fetch_max_response_size(),
             timeout_secs: default_web_fetch_timeout_secs(),
+            firecrawl: FirecrawlConfig::default(),
         }
     }
 }
@@ -3148,6 +3307,132 @@ impl Default for ClaudeCodeConfig {
             allowed_tools: default_claude_code_allowed_tools(),
             system_prompt: None,
             max_output_bytes: default_claude_code_max_output_bytes(),
+            env_passthrough: Vec::new(),
+        }
+    }
+}
+
+// ── Codex CLI ───────────────────────────────────────────────────
+
+/// Codex CLI tool configuration (`[codex_cli]` section).
+///
+/// Delegates coding tasks to the `codex -q` CLI. Authentication uses the
+/// binary's own session by default — no API key needed unless
+/// `env_passthrough` includes `OPENAI_API_KEY`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CodexCliConfig {
+    /// Enable the `codex_cli` tool
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum execution time in seconds (coding tasks can be long)
+    #[serde(default = "default_codex_cli_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Maximum output size in bytes (2MB default)
+    #[serde(default = "default_codex_cli_max_output_bytes")]
+    pub max_output_bytes: usize,
+    /// Extra env vars passed to the codex subprocess (e.g. OPENAI_API_KEY)
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
+}
+
+fn default_codex_cli_timeout_secs() -> u64 {
+    600
+}
+
+fn default_codex_cli_max_output_bytes() -> usize {
+    2_097_152
+}
+
+impl Default for CodexCliConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_codex_cli_timeout_secs(),
+            max_output_bytes: default_codex_cli_max_output_bytes(),
+            env_passthrough: Vec::new(),
+        }
+    }
+}
+
+// ── Gemini CLI ──────────────────────────────────────────────────
+
+/// Gemini CLI tool configuration (`[gemini_cli]` section).
+///
+/// Delegates coding tasks to the `gemini -p` CLI. Authentication uses the
+/// binary's own session by default — no API key needed unless
+/// `env_passthrough` includes `GOOGLE_API_KEY`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GeminiCliConfig {
+    /// Enable the `gemini_cli` tool
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum execution time in seconds (coding tasks can be long)
+    #[serde(default = "default_gemini_cli_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Maximum output size in bytes (2MB default)
+    #[serde(default = "default_gemini_cli_max_output_bytes")]
+    pub max_output_bytes: usize,
+    /// Extra env vars passed to the gemini subprocess (e.g. GOOGLE_API_KEY)
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
+}
+
+fn default_gemini_cli_timeout_secs() -> u64 {
+    600
+}
+
+fn default_gemini_cli_max_output_bytes() -> usize {
+    2_097_152
+}
+
+impl Default for GeminiCliConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_gemini_cli_timeout_secs(),
+            max_output_bytes: default_gemini_cli_max_output_bytes(),
+            env_passthrough: Vec::new(),
+        }
+    }
+}
+
+// ── OpenCode CLI ───────────────────────────────────────────────
+
+/// OpenCode CLI tool configuration (`[opencode_cli]` section).
+///
+/// Delegates coding tasks to the `opencode run` CLI. Authentication uses the
+/// binary's own session by default — no API key needed unless
+/// `env_passthrough` includes provider-specific keys.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OpenCodeCliConfig {
+    /// Enable the `opencode_cli` tool
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum execution time in seconds (coding tasks can be long)
+    #[serde(default = "default_opencode_cli_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Maximum output size in bytes (2MB default)
+    #[serde(default = "default_opencode_cli_max_output_bytes")]
+    pub max_output_bytes: usize,
+    /// Extra env vars passed to the opencode subprocess
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
+}
+
+fn default_opencode_cli_timeout_secs() -> u64 {
+    600
+}
+
+fn default_opencode_cli_max_output_bytes() -> usize {
+    2_097_152
+}
+
+impl Default for OpenCodeCliConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_opencode_cli_timeout_secs(),
+            max_output_bytes: default_opencode_cli_max_output_bytes(),
             env_passthrough: Vec::new(),
         }
     }
@@ -4389,6 +4674,10 @@ impl Default for AutonomyConfig {
                 "head".into(),
                 "tail".into(),
                 "date".into(),
+                "python".into(),
+                "python3".into(),
+                "pip".into(),
+                "node".into(),
             ],
             forbidden_paths: vec![
                 "/etc".into(),
@@ -7161,6 +7450,7 @@ impl Default for Config {
             browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
+            media_pipeline: MediaPipelineConfig::default(),
             web_fetch: WebFetchConfig::default(),
             link_enricher: LinkEnricherConfig::default(),
             text_browser: TextBrowserConfig::default(),
@@ -7192,6 +7482,10 @@ impl Default for Config {
             locale: None,
             verifiable_intent: VerifiableIntentConfig::default(),
             claude_code: ClaudeCodeConfig::default(),
+            codex_cli: CodexCliConfig::default(),
+            gemini_cli: GeminiCliConfig::default(),
+            opencode_cli: OpenCodeCliConfig::default(),
+            sop: SopConfig::default(),
         }
     }
 }
@@ -7209,6 +7503,12 @@ struct ActiveWorkspaceState {
 }
 
 fn default_config_dir() -> Result<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Ok(PathBuf::from(home).join(".zeroclaw"));
+        }
+    }
+
     let home = UserDirs::new()
         .map(|u| u.home_dir().to_path_buf())
         .context("Could not find home directory")?;
@@ -9696,6 +9996,70 @@ async fn sync_directory(path: &Path) -> Result<()> {
     }
 }
 
+// ── SOP engine configuration ───────────────────────────────────
+
+/// Standard Operating Procedures engine configuration (`[sop]`).
+///
+/// The `default_execution_mode` field uses the `SopExecutionMode` type from
+/// `sop::types` (re-exported via `sop::SopExecutionMode`). To avoid circular
+/// module references, config stores it using the same enum definition.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SopConfig {
+    /// Directory containing SOP definitions (subdirs with SOP.toml + SOP.md).
+    /// Falls back to `<workspace>/sops` when omitted.
+    #[serde(default)]
+    pub sops_dir: Option<String>,
+
+    /// Default execution mode for SOPs that omit `execution_mode`.
+    /// Values: `auto`, `supervised` (default), `step_by_step`,
+    /// `priority_based`, `deterministic`.
+    #[serde(default = "default_sop_execution_mode")]
+    pub default_execution_mode: String,
+
+    /// Maximum total concurrent SOP runs across all SOPs.
+    #[serde(default = "default_sop_max_concurrent_total")]
+    pub max_concurrent_total: usize,
+
+    /// Approval timeout in seconds. When a run waits for approval longer than
+    /// this, Critical/High-priority SOPs auto-approve; others stay waiting.
+    /// Set to 0 to disable timeout.
+    #[serde(default = "default_sop_approval_timeout_secs")]
+    pub approval_timeout_secs: u64,
+
+    /// Maximum number of finished runs kept in memory for status queries.
+    /// Oldest runs are evicted when over capacity. 0 = unlimited.
+    #[serde(default = "default_sop_max_finished_runs")]
+    pub max_finished_runs: usize,
+}
+
+fn default_sop_execution_mode() -> String {
+    "supervised".to_string()
+}
+
+fn default_sop_max_concurrent_total() -> usize {
+    4
+}
+
+fn default_sop_approval_timeout_secs() -> u64 {
+    300
+}
+
+fn default_sop_max_finished_runs() -> usize {
+    100
+}
+
+impl Default for SopConfig {
+    fn default() -> Self {
+        Self {
+            sops_dir: None,
+            default_execution_mode: default_sop_execution_mode(),
+            max_concurrent_total: default_sop_max_concurrent_total(),
+            approval_timeout_secs: default_sop_approval_timeout_secs(),
+            max_finished_runs: default_sop_max_finished_runs(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10143,6 +10507,7 @@ default_temperature = 0.7
             browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
+            media_pipeline: MediaPipelineConfig::default(),
             web_fetch: WebFetchConfig::default(),
             link_enricher: LinkEnricherConfig::default(),
             text_browser: TextBrowserConfig::default(),
@@ -10175,6 +10540,10 @@ default_temperature = 0.7
             locale: None,
             verifiable_intent: VerifiableIntentConfig::default(),
             claude_code: ClaudeCodeConfig::default(),
+            codex_cli: CodexCliConfig::default(),
+            gemini_cli: GeminiCliConfig::default(),
+            opencode_cli: OpenCodeCliConfig::default(),
+            sop: SopConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -10660,6 +11029,7 @@ default_temperature = 0.7
             browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
+            media_pipeline: MediaPipelineConfig::default(),
             web_fetch: WebFetchConfig::default(),
             link_enricher: LinkEnricherConfig::default(),
             text_browser: TextBrowserConfig::default(),
@@ -10692,6 +11062,10 @@ default_temperature = 0.7
             locale: None,
             verifiable_intent: VerifiableIntentConfig::default(),
             claude_code: ClaudeCodeConfig::default(),
+            codex_cli: CodexCliConfig::default(),
+            gemini_cli: GeminiCliConfig::default(),
+            opencode_cli: OpenCodeCliConfig::default(),
+            sop: SopConfig::default(),
         };
 
         config.save().await.unwrap();
@@ -12453,6 +12827,10 @@ default_model = "legacy-model"
         let custom_config_dir = temp_home.join("profiles").join("agent-alpha");
 
         fs::create_dir_all(&custom_config_dir).await.unwrap();
+        // Pre-create the default dir so is_temp_directory() can canonicalize
+        // the path on macOS (where /var → /private/var symlink requires
+        // the directory to exist for canonicalize to resolve correctly).
+        fs::create_dir_all(&temp_default_dir).await.unwrap();
         fs::write(
             custom_config_dir.join("config.toml"),
             "default_temperature = 0.7\ndefault_model = \"persisted-profile\"\n",
@@ -14251,9 +14629,9 @@ require_otp_to_resume = true
 
     // ── Bootstrap files ─────────────────────────────────────
 
-    #[test]
+    #[tokio::test]
     async fn ensure_bootstrap_files_creates_missing_files() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join("workspace");
         let _: () = tokio::fs::create_dir_all(&ws).await.unwrap();
 
@@ -14267,9 +14645,9 @@ require_otp_to_resume = true
         assert!(identity.contains("IDENTITY.md"));
     }
 
-    #[test]
+    #[tokio::test]
     async fn ensure_bootstrap_files_does_not_overwrite_existing() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join("workspace");
         let _: () = tokio::fs::create_dir_all(&ws).await.unwrap();
 
@@ -14289,5 +14667,33 @@ require_otp_to_resume = true
             .await
             .unwrap();
         assert!(identity.contains("IDENTITY.md"));
+    }
+
+    // ── PacingConfig serde defaults ─────────────────────────────
+
+    #[test]
+    async fn pacing_config_serde_defaults_match_manual_default() {
+        // Deserialise an empty TOML table and verify the loop-detection
+        // fields receive the same defaults as `PacingConfig::default()`.
+        let from_toml: PacingConfig = toml::from_str("").unwrap();
+        let manual = PacingConfig::default();
+
+        assert_eq!(
+            from_toml.loop_detection_enabled,
+            manual.loop_detection_enabled
+        );
+        assert_eq!(
+            from_toml.loop_detection_window_size,
+            manual.loop_detection_window_size
+        );
+        assert_eq!(
+            from_toml.loop_detection_max_repeats,
+            manual.loop_detection_max_repeats
+        );
+
+        // Verify concrete values so a silent change to the defaults is caught.
+        assert!(from_toml.loop_detection_enabled, "default should be true");
+        assert_eq!(from_toml.loop_detection_window_size, 20);
+        assert_eq!(from_toml.loop_detection_max_repeats, 3);
     }
 }
