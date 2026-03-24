@@ -127,6 +127,10 @@ impl RuntimeAdapter for DockerRuntime {
                 .arg("/workspace");
         }
 
+        for vol in &self.config.volumes {
+            process.arg("--volume").arg(vol);
+        }
+
         process
             .arg(self.config.image.trim())
             .arg("sh")
@@ -165,6 +169,7 @@ mod tests {
             read_only_rootfs: true,
             mount_workspace: true,
             allowed_workspace_roots: Vec::new(),
+            volumes: Vec::new(),
         };
         let runtime = DockerRuntime::new(cfg);
 
