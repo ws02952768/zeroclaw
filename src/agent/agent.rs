@@ -1048,6 +1048,14 @@ impl Agent {
                     .push(ConversationMessage::Chat(ChatMessage::assistant(
                         text.clone(),
                     )));
+                
+                if !got_stream {
+                    let _ = event_tx
+                        .send(TurnEvent::Chunk {
+                            delta: text.clone(),
+                        })
+                        .await;
+                }
             }
 
             self.history.push(ConversationMessage::AssistantToolCalls {
