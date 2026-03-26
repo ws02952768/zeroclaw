@@ -72,7 +72,6 @@ struct NativeChatRequest {
 #[derive(Debug, Serialize)]
 struct NativeMessage {
     role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
@@ -271,8 +270,9 @@ impl OpenAiProvider {
                                     .collect::<Vec<_>>();
                                 let content = value
                                     .get("content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(ToString::to_string);
+                                    .and_then(|v| if v.is_null() { None } else { v.as_str() })
+                                    .map(ToString::to_string)
+                                    .or_else(|| Some("".to_string()));
                                 let reasoning_content = value
                                     .get("reasoning_content")
                                     .and_then(serde_json::Value::as_str)
@@ -297,8 +297,9 @@ impl OpenAiProvider {
                             .map(ToString::to_string);
                         let content = value
                             .get("content")
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string);
+                            .and_then(|v| if v.is_null() { None } else { v.as_str() })
+                            .map(ToString::to_string)
+                            .or_else(|| Some("".to_string()));
                         return NativeMessage {
                             role: "tool".to_string(),
                             content,
@@ -392,6 +393,10 @@ impl Provider for OpenAiProvider {
             .await?;
 
         if !response.status().is_success() {
+            tracing::error!(
+                "OpenAI API Failure. Request Payload: {}",
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
             return Err(super::api_error("OpenAI", response).await);
         }
 
@@ -436,6 +441,10 @@ impl Provider for OpenAiProvider {
             .await?;
 
         if !response.status().is_success() {
+            tracing::error!(
+                "OpenAI API Failure. Request Payload: {}",
+                serde_json::to_string_pretty(&native_request).unwrap_or_default()
+            );
             return Err(super::api_error("OpenAI", response).await);
         }
 
@@ -503,6 +512,10 @@ impl Provider for OpenAiProvider {
             .await?;
 
         if !response.status().is_success() {
+            tracing::error!(
+                "OpenAI API Failure. Request Payload: {}",
+                serde_json::to_string_pretty(&native_request).unwrap_or_default()
+            );
             return Err(super::api_error("OpenAI", response).await);
         }
 

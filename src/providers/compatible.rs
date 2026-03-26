@@ -1560,6 +1560,11 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         if !response.status().is_success() {
+            tracing::error!(
+                "{} API Failure. Request Payload: {}",
+                self.name,
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
             let status = response.status();
             let error = response.text().await?;
             let sanitized = super::sanitize_api_error(&error);
@@ -1673,6 +1678,11 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         if !response.status().is_success() {
+            tracing::error!(
+                "{} API Failure. Request Payload: {}",
+                self.name,
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
             let status = response.status();
 
             // Mirror chat_with_system: 404 may mean this provider uses the Responses API
@@ -1791,6 +1801,11 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         if !response.status().is_success() {
+            tracing::error!(
+                "{} API Failure. Request Payload: {}",
+                self.name,
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
             return Err(super::api_error(&self.name, response).await);
         }
 
@@ -1904,6 +1919,11 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         if !response.status().is_success() {
+            tracing::error!(
+                "{} API Failure. Request Payload: {}",
+                self.name,
+                serde_json::to_string_pretty(&native_request).unwrap_or_default()
+            );
             let status = response.status();
             let error = response.text().await?;
             let sanitized = super::sanitize_api_error(&error);
@@ -2082,6 +2102,10 @@ impl Provider for OpenAiCompatibleProvider {
             };
 
             if !response.status().is_success() {
+                tracing::error!(
+                    "Compatible API Stream Failure. Request Payload: {}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
                 let status = response.status();
                 let error = match response.text().await {
                     Ok(text) => text,
@@ -2187,6 +2211,10 @@ impl Provider for OpenAiCompatibleProvider {
 
             // Check status
             if !response.status().is_success() {
+                tracing::error!(
+                    "Compatible API Stream Failure. Request Payload: {}",
+                    serde_json::to_string_pretty(&request).unwrap_or_default()
+                );
                 let status = response.status();
                 let error = match response.text().await {
                     Ok(e) => e,

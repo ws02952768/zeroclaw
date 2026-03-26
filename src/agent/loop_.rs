@@ -424,13 +424,10 @@ fn memory_session_id_from_state_file(path: &Path) -> Option<String> {
     Some(format!("cli:{raw}"))
 }
 
-/// Trim conversation history to prevent unbounded growth.
-/// Preserves the system prompt (first message if role=system) and the most recent messages.
 fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
-    // Nothing to trim if within limit
     let has_system = history.first().map_or(false, |m| m.role == "system");
     let non_system_count = if has_system {
-        history.len() - 1
+        history.len().saturating_sub(1)
     } else {
         history.len()
     };
@@ -439,8 +436,26 @@ fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
         return;
     }
 
-    let start = if has_system { 1 } else { 0 };
-    let to_remove = non_system_count - max_history;
+    let mut to_remove = non_system_count - max_history;
+    let mut start = if has_system { 1 } else { 0 };
+
+    // Prevent strictly-typed LLM APIs (like vLLM) from throwing "No user query found"
+    // by ensuring the original user prompt is never truncated.
+    if let Some(first_user_idx) = history.iter().position(|m| m.role == "user") {
+        if first_user_idx == start {
+            start += 1;
+        } else if first_user_idx > start {
+            let user_msg = history.remove(first_user_idx);
+            history.insert(start, user_msg);
+            start += 1;
+        }
+    }
+
+    // Do not leave dangling `tool` messages at the chunk boundary (causes API format errors)
+    while start + to_remove < history.len() && history[start + to_remove].role == "tool" {
+        to_remove += 1;
+    }
+
     history.drain(start..start + to_remove);
 }
 
@@ -8698,15 +8713,16 @@ Let me check the result."#;
     fn trim_history_removes_oldest_non_system() {
         let mut history = vec![
             crate::providers::ChatMessage::system("system"),
-            crate::providers::ChatMessage::user("old msg"),
+            crate::providers::ChatMessage::user("first user msg"),
             crate::providers::ChatMessage::assistant("old reply"),
             crate::providers::ChatMessage::user("new msg"),
             crate::providers::ChatMessage::assistant("new reply"),
         ];
         trim_history(&mut history, 2);
-        assert_eq!(history.len(), 3); // system + 2 kept
+        assert_eq!(history.len(), 3); // system + first user msg + new reply kept
         assert_eq!(history[0].role, "system");
-        assert_eq!(history[1].content, "new msg");
+        assert_eq!(history[1].content, "first user msg");
+        assert_eq!(history[2].content, "new reply");
     }
 
     /// When `build_system_prompt_with_mode` is called with `native_tools = true`,
