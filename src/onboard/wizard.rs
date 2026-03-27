@@ -145,6 +145,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
+        trust: crate::trust::TrustConfig::default(),
         backup: crate::config::BackupConfig::default(),
         data_retention: crate::config::DataRetentionConfig::default(),
         cloud_ops: crate::config::CloudOpsConfig::default(),
@@ -588,6 +589,7 @@ async fn run_quick_setup_with_home(
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
+        trust: crate::trust::TrustConfig::default(),
         backup: crate::config::BackupConfig::default(),
         data_retention: crate::config::DataRetentionConfig::default(),
         cloud_ops: crate::config::CloudOpsConfig::default(),
@@ -3938,6 +3940,9 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     interrupt_on_new_message: false,
                     mention_only: false,
                     proxy_url: None,
+                    stream_mode: StreamMode::MultiMessage,
+                    draft_update_interval_ms: 1000,
+                    multi_message_delay_ms: 800,
                 });
             }
             ChannelMenuChoice::Slack => {
@@ -4140,13 +4145,10 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     continue;
                 }
 
-                let access_token: String =
-                    Input::new().with_prompt("  Access token").interact_text()?;
-
-                if access_token.trim().is_empty() {
-                    println!("  {} Skipped — token required", style("→").dim());
-                    continue;
-                }
+                let access_token: String = dialoguer::Password::new()
+                    .with_prompt("  Access token")
+                    .allow_empty_password(false)
+                    .interact()?;
 
                 // Test connection (run entirely in separate thread — Response must be used/dropped there)
                 let hs = homeserver.trim_end_matches('/');
@@ -4222,6 +4224,16 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     users_str.split(',').map(|s| s.trim().to_string()).collect()
                 };
 
+                let recovery_input: String = dialoguer::Password::new()
+                    .with_prompt("  E2EE recovery key (or Enter to skip — see docs/security/matrix-e2ee-guide.md section 4G)")
+                    .allow_empty_password(true)
+                    .interact()?;
+                let recovery_key = if recovery_input.trim().is_empty() {
+                    None
+                } else {
+                    Some(recovery_input.trim().to_string())
+                };
+
                 config.matrix = Some(MatrixConfig {
                     homeserver: homeserver.trim_end_matches('/').to_string(),
                     access_token,
@@ -4231,6 +4243,10 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     allowed_users,
                     allowed_rooms: vec![],
                     interrupt_on_new_message: false,
+                    stream_mode: StreamMode::Partial,
+                    draft_update_interval_ms: 1500,
+                    multi_message_delay_ms: 800,
+                    recovery_key,
                 });
             }
             ChannelMenuChoice::Signal => {
@@ -4427,6 +4443,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
                         dm_policy: WhatsAppChatPolicy::default(),
                         group_policy: WhatsAppChatPolicy::default(),
                         self_chat_mode: false,
+                        dm_mention_patterns: vec![],
+                        group_mention_patterns: vec![],
                         proxy_url: None,
                     });
 
@@ -4533,6 +4551,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     dm_policy: WhatsAppChatPolicy::default(),
                     group_policy: WhatsAppChatPolicy::default(),
                     self_chat_mode: false,
+                    dm_mention_patterns: vec![],
+                    group_mention_patterns: vec![],
                     proxy_url: None,
                 });
             }
@@ -4868,6 +4888,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     },
                     allowed_users,
                     proxy_url: None,
+                    bot_name: None,
                 });
 
                 println!("  {} Nextcloud Talk configured", style("✅").green().bold());
@@ -7605,6 +7626,7 @@ mod tests {
             webhook_secret: Some("secret".into()),
             allowed_users: vec!["*".into()],
             proxy_url: None,
+            bot_name: None,
         });
         assert!(has_launchable_channels(&channels));
 
