@@ -200,7 +200,11 @@ impl ToolDispatcher for NativeToolDispatcher {
                     .tool_call_id
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string()),
-                content: result.output.clone(),
+                content: if result.output.trim().is_empty() {
+                    "Execution successful (no output)".to_string()
+                } else {
+                    result.output.clone()
+                },
             })
             .collect();
         ConversationMessage::ToolResults(messages)

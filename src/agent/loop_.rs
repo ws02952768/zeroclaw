@@ -300,6 +300,177 @@ fn autosave_memory_key(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4())
 }
 
+fn memory_session_id_from_state_file(path: &Path) -> Option<String> {
+    let raw = path.to_string_lossy().trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+
+    Some(format!("cli:{raw}"))
+}
+
+fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
+    let has_system = history.first().map_or(false, |m| m.role == "system");
+    let non_system_count = if has_system {
+        history.len().saturating_sub(1)
+    } else {
+        history.len()
+    };
+
+    if non_system_count <= max_history {
+        return;
+    }
+
+    let mut to_remove = non_system_count - max_history;
+    let mut start = if has_system { 1 } else { 0 };
+
+    // Prevent strictly-typed LLM APIs (like vLLM) from throwing "No user query found"
+    // by ensuring the original user prompt is never truncated.
+    if let Some(first_user_idx) = history.iter().position(|m| m.role == "user") {
+        if first_user_idx == start {
+            start += 1;
+        } else if first_user_idx > start {
+            let user_msg = history.remove(first_user_idx);
+            history.insert(start, user_msg);
+            start += 1;
+        }
+    }
+
+    // Do not leave dangling `tool` messages at the chunk boundary (causes API format errors)
+    while start + to_remove < history.len() && history[start + to_remove].role == "tool" {
+        to_remove += 1;
+    }
+
+    history.drain(start..start + to_remove);
+}
+
+fn build_compaction_transcript(messages: &[ChatMessage]) -> String {
+    let mut transcript = String::new();
+    for msg in messages {
+        let role = msg.role.to_uppercase();
+        let _ = writeln!(transcript, "{role}: {}", msg.content.trim());
+    }
+
+    if transcript.chars().count() > COMPACTION_MAX_SOURCE_CHARS {
+        truncate_with_ellipsis(&transcript, COMPACTION_MAX_SOURCE_CHARS)
+    } else {
+        transcript
+    }
+}
+
+fn apply_compaction_summary(
+    history: &mut Vec<ChatMessage>,
+    start: usize,
+    compact_end: usize,
+    summary: &str,
+) {
+    let summary_msg = ChatMessage::assistant(format!("[Compaction summary]\n{}", summary.trim()));
+    history.splice(start..compact_end, std::iter::once(summary_msg));
+}
+
+async fn auto_compact_history(
+    history: &mut Vec<ChatMessage>,
+    provider: &dyn Provider,
+    model: &str,
+    max_history: usize,
+    max_context_tokens: usize,
+) -> Result<bool> {
+    let has_system = history.first().map_or(false, |m| m.role == "system");
+    let non_system_count = if has_system {
+        history.len().saturating_sub(1)
+    } else {
+        history.len()
+    };
+
+    let estimated_tokens = estimate_history_tokens(history);
+
+    // Trigger compaction when either token budget OR message count is exceeded.
+    if estimated_tokens <= max_context_tokens && non_system_count <= max_history {
+        return Ok(false);
+    }
+
+    let start = if has_system { 1 } else { 0 };
+    let keep_recent = COMPACTION_KEEP_RECENT_MESSAGES.min(non_system_count);
+    let compact_count = non_system_count.saturating_sub(keep_recent);
+    if compact_count == 0 {
+        return Ok(false);
+    }
+
+    let mut compact_end = start + compact_count;
+
+    // Snap compact_end to a user-turn boundary so we don't split mid-conversation.
+    while compact_end > start && history.get(compact_end).map_or(false, |m| m.role != "user") {
+        compact_end -= 1;
+    }
+    if compact_end <= start {
+        return Ok(false);
+    }
+
+    let to_compact: Vec<ChatMessage> = history[start..compact_end].to_vec();
+    let transcript = build_compaction_transcript(&to_compact);
+
+    let summarizer_system = "You are a conversation compaction engine. Summarize older chat history into concise context for future turns. Preserve: user preferences, commitments, decisions, unresolved tasks, key facts. Omit: filler, repeated chit-chat, verbose tool logs. Output plain text bullet points only.";
+
+    let summarizer_user = format!(
+        "Summarize the following conversation history for context preservation. Keep it short (max 12 bullet points).\n\n{}",
+        transcript
+    );
+
+    let summary_raw = provider
+        .chat_with_system(Some(summarizer_system), &summarizer_user, model, 0.2)
+        .await
+        .unwrap_or_else(|_| {
+            // Fallback to deterministic local truncation when summarization fails.
+            truncate_with_ellipsis(&transcript, COMPACTION_MAX_SUMMARY_CHARS)
+        });
+
+    let summary = truncate_with_ellipsis(&summary_raw, COMPACTION_MAX_SUMMARY_CHARS);
+    apply_compaction_summary(history, start, compact_end, &summary);
+
+    Ok(true)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InteractiveSessionState {
+    version: u32,
+    history: Vec<ChatMessage>,
+}
+
+impl InteractiveSessionState {
+    fn from_history(history: &[ChatMessage]) -> Self {
+        Self {
+            version: 1,
+            history: history.to_vec(),
+        }
+    }
+}
+
+fn load_interactive_session_history(path: &Path, system_prompt: &str) -> Result<Vec<ChatMessage>> {
+    if !path.exists() {
+        return Ok(vec![ChatMessage::system(system_prompt)]);
+    }
+
+    let raw = std::fs::read_to_string(path)?;
+    let mut state: InteractiveSessionState = serde_json::from_str(&raw)?;
+    if state.history.is_empty() {
+        state.history.push(ChatMessage::system(system_prompt));
+    } else if state.history.first().map(|msg| msg.role.as_str()) != Some("system") {
+        state.history.insert(0, ChatMessage::system(system_prompt));
+    }
+
+    Ok(state.history)
+}
+
+fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let payload = serde_json::to_string_pretty(&InteractiveSessionState::from_history(history))?;
+    std::fs::write(path, payload)?;
+    Ok(())
+}
+
 /// Build context preamble by searching memory for relevant entries.
 /// Entries with a hybrid score below `min_relevance_score` are dropped to
 /// prevent unrelated memories from bleeding into the conversation.
@@ -8742,15 +8913,16 @@ Let me check the result."#;
     fn trim_history_removes_oldest_non_system() {
         let mut history = vec![
             crate::providers::ChatMessage::system("system"),
-            crate::providers::ChatMessage::user("old msg"),
+            crate::providers::ChatMessage::user("first user msg"),
             crate::providers::ChatMessage::assistant("old reply"),
             crate::providers::ChatMessage::user("new msg"),
             crate::providers::ChatMessage::assistant("new reply"),
         ];
         trim_history(&mut history, 2);
-        assert_eq!(history.len(), 3); // system + 2 kept
+        assert_eq!(history.len(), 3); // system + first user msg + new reply kept
         assert_eq!(history[0].role, "system");
-        assert_eq!(history[1].content, "new msg");
+        assert_eq!(history[1].content, "first user msg");
+        assert_eq!(history[2].content, "new reply");
     }
 
     /// When `build_system_prompt_with_mode` is called with `native_tools = true`,

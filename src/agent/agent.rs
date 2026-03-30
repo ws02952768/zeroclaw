@@ -577,9 +577,33 @@ impl Agent {
             }
         }
 
-        if other_messages.len() > max {
-            let drop_count = other_messages.len() - max;
-            other_messages.drain(0..drop_count);
+        // Prevent strictly-typed LLM APIs (like vLLM) from throwing "No user query found"
+        // by parsing for the first user prompt and anchoring it at index 0.
+        if let Some(user_idx) = other_messages.iter().position(|m| {
+            matches!(m, ConversationMessage::Chat(chat) if chat.role == "user")
+        }) {
+            if user_idx > 0 {
+                let user_msg = other_messages.remove(user_idx);
+                other_messages.insert(0, user_msg);
+            }
+        }
+
+        let target_other_len = max.saturating_sub(system_messages.len());
+        if other_messages.len() > target_other_len {
+            let mut drop_count = other_messages.len() - target_other_len;
+            let start = 1; // Preserve the anchored user message at index 0
+
+            // Prevent dangling tool responses (ToolResults without preceding AssistantToolCalls)
+            while start + drop_count < other_messages.len()
+                && matches!(
+                    other_messages[start + drop_count],
+                    ConversationMessage::ToolResults(_)
+                )
+            {
+                drop_count += 1;
+            }
+
+            other_messages.drain(start..start + drop_count);
         }
 
         self.history = system_messages;
@@ -870,10 +894,6 @@ impl Agent {
             }
 
             if !text.is_empty() {
-                self.history
-                    .push(ConversationMessage::Chat(ChatMessage::assistant(
-                        text.clone(),
-                    )));
                 print!("{text}");
                 let _ = std::io::stdout().flush();
             }
@@ -1146,10 +1166,13 @@ impl Agent {
 
             // ── Tool calls ─────────────────────────────────────────────
             if !text.is_empty() {
-                self.history
-                    .push(ConversationMessage::Chat(ChatMessage::assistant(
-                        text.clone(),
-                    )));
+                if !got_stream {
+                    let _ = event_tx
+                        .send(TurnEvent::Chunk {
+                            delta: text.clone(),
+                        })
+                        .await;
+                }
             }
 
             self.history.push(ConversationMessage::AssistantToolCalls {

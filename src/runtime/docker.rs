@@ -122,9 +122,17 @@ impl RuntimeAdapter for DockerRuntime {
 
             process
                 .arg("--volume")
-                .arg(format!("{}:/workspace:rw", host_workspace.display()))
-                .arg("--workdir")
-                .arg("/workspace");
+                .arg(format!("{}:/workspace:rw", host_workspace.display()));
+        }
+        
+        // Always execute inside /workspace so `pwd` resolves correctly 
+        // even if we are only piecemeal mounting sub-directories.
+        process
+            .arg("--workdir")
+            .arg("/workspace");
+
+        for vol in &self.config.volumes {
+            process.arg("--volume").arg(vol);
         }
 
         process
@@ -165,6 +173,7 @@ mod tests {
             read_only_rootfs: true,
             mount_workspace: true,
             allowed_workspace_roots: Vec::new(),
+            volumes: Vec::new(),
         };
         let runtime = DockerRuntime::new(cfg);
 

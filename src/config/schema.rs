@@ -5446,6 +5446,10 @@ pub struct DockerRuntimeConfig {
     /// Optional workspace root allowlist for Docker mount validation.
     #[serde(default)]
     pub allowed_workspace_roots: Vec<String>,
+
+    /// Additional custom explicit docker volumes to mount (`Host:Container` or `Host:Container:mode`)
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 fn default_runtime_kind() -> String {
@@ -5478,6 +5482,7 @@ impl Default for DockerRuntimeConfig {
             read_only_rootfs: true,
             mount_workspace: true,
             allowed_workspace_roots: Vec::new(),
+            volumes: Vec::new(),
         }
     }
 }
