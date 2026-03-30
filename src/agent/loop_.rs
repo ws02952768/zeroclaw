@@ -19,7 +19,7 @@ use regex::{Regex, RegexSet};
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -262,6 +262,15 @@ pub(crate) fn scrub_credentials(input: &str) -> String {
 /// Minimum interval between progress sends to avoid flooding the draft channel.
 pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 
+/// Maximum characters of old history to feed into the summarization model.
+pub(crate) const COMPACTION_MAX_SOURCE_CHARS: usize = 32000;
+
+/// Number of recent messages to preserve verbatim when compacting older history.
+pub(crate) const COMPACTION_KEEP_RECENT_MESSAGES: usize = 6;
+
+/// Maximum characters to allow for the generated compaction summary.
+pub(crate) const COMPACTION_MAX_SUMMARY_CHARS: usize = 2000;
+
 /// Structured event sent through the draft channel so channels can
 /// differentiate between status/progress updates and actual response content.
 #[derive(Debug, Clone)]
@@ -309,40 +318,7 @@ fn memory_session_id_from_state_file(path: &Path) -> Option<String> {
     Some(format!("cli:{raw}"))
 }
 
-fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
-    let has_system = history.first().map_or(false, |m| m.role == "system");
-    let non_system_count = if has_system {
-        history.len().saturating_sub(1)
-    } else {
-        history.len()
-    };
 
-    if non_system_count <= max_history {
-        return;
-    }
-
-    let mut to_remove = non_system_count - max_history;
-    let mut start = if has_system { 1 } else { 0 };
-
-    // Prevent strictly-typed LLM APIs (like vLLM) from throwing "No user query found"
-    // by ensuring the original user prompt is never truncated.
-    if let Some(first_user_idx) = history.iter().position(|m| m.role == "user") {
-        if first_user_idx == start {
-            start += 1;
-        } else if first_user_idx > start {
-            let user_msg = history.remove(first_user_idx);
-            history.insert(start, user_msg);
-            start += 1;
-        }
-    }
-
-    // Do not leave dangling `tool` messages at the chunk boundary (causes API format errors)
-    while start + to_remove < history.len() && history[start + to_remove].role == "tool" {
-        to_remove += 1;
-    }
-
-    history.drain(start..start + to_remove);
-}
 
 fn build_compaction_transcript(messages: &[ChatMessage]) -> String {
     let mut transcript = String::new();
@@ -430,46 +406,7 @@ async fn auto_compact_history(
     Ok(true)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct InteractiveSessionState {
-    version: u32,
-    history: Vec<ChatMessage>,
-}
 
-impl InteractiveSessionState {
-    fn from_history(history: &[ChatMessage]) -> Self {
-        Self {
-            version: 1,
-            history: history.to_vec(),
-        }
-    }
-}
-
-fn load_interactive_session_history(path: &Path, system_prompt: &str) -> Result<Vec<ChatMessage>> {
-    if !path.exists() {
-        return Ok(vec![ChatMessage::system(system_prompt)]);
-    }
-
-    let raw = std::fs::read_to_string(path)?;
-    let mut state: InteractiveSessionState = serde_json::from_str(&raw)?;
-    if state.history.is_empty() {
-        state.history.push(ChatMessage::system(system_prompt));
-    } else if state.history.first().map(|msg| msg.role.as_str()) != Some("system") {
-        state.history.insert(0, ChatMessage::system(system_prompt));
-    }
-
-    Ok(state.history)
-}
-
-fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let payload = serde_json::to_string_pretty(&InteractiveSessionState::from_history(history))?;
-    std::fs::write(path, payload)?;
-    Ok(())
-}
 
 /// Build context preamble by searching memory for relevant entries.
 /// Entries with a hybrid score below `min_relevance_score` are dropped to
