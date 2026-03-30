@@ -2,10 +2,11 @@ use super::traits::{Tool, ToolResult};
 use crate::agent::loop_::run_tool_call_loop;
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::config::{DelegateAgentConfig, DelegateToolConfig};
+use crate::memory::{Memory, NamespacedMemory};
 use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::providers::{self, ChatMessage, Provider};
-use crate::security::policy::ToolOperation;
 use crate::security::SecurityPolicy;
+use crate::security::policy::ToolOperation;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::json;
@@ -70,6 +71,8 @@ pub struct DelegateTool {
     workspace_dir: PathBuf,
     /// Cancellation token for cascade control of background tasks.
     cancellation_token: CancellationToken,
+    /// Optional memory instance for namespace isolation on delegate agents.
+    memory: Option<Arc<dyn Memory>>,
 }
 
 impl DelegateTool {
@@ -103,6 +106,7 @@ impl DelegateTool {
             delegate_config: DelegateToolConfig::default(),
             workspace_dir: PathBuf::new(),
             cancellation_token: CancellationToken::new(),
+            memory: None,
         }
     }
 
@@ -142,6 +146,7 @@ impl DelegateTool {
             delegate_config: DelegateToolConfig::default(),
             workspace_dir: PathBuf::new(),
             cancellation_token: CancellationToken::new(),
+            memory: None,
         }
     }
 
@@ -185,6 +190,25 @@ impl DelegateTool {
     /// Return the cancellation token for external cascade control.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
+    }
+
+    /// Attach memory for namespace isolation on delegate agents.
+    pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
+    /// Wrap memory with namespace isolation if configured for the given agent.
+    /// Returns the namespaced memory if memory_namespace is set, otherwise returns
+    /// the original memory.
+    fn get_agent_memory(&self, agent_config: &DelegateAgentConfig) -> Option<Arc<dyn Memory>> {
+        self.memory.as_ref().map(|mem| {
+            if let Some(namespace) = &agent_config.memory_namespace {
+                Arc::new(NamespacedMemory::new(mem.clone(), namespace.clone())) as Arc<dyn Memory>
+            } else {
+                mem.clone()
+            }
+        })
     }
 
     /// Directory where background delegate results are stored.
@@ -626,6 +650,7 @@ impl DelegateTool {
                 delegate_config,
                 workspace_dir: workspace_dir.clone(),
                 cancellation_token: child_token.clone(),
+                memory: None,
             };
 
             let args_inner = json!({
@@ -783,6 +808,7 @@ impl DelegateTool {
                     delegate_config,
                     workspace_dir,
                     cancellation_token,
+                    memory: None,
                 };
                 let result = Box::pin(inner.execute_sync(&agent_name, &prompt, &args_clone)).await;
                 (agent_name, result)
@@ -1260,6 +1286,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         agents.insert(
@@ -1277,6 +1304,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         agents
@@ -1433,6 +1461,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         }
     }
 
@@ -1548,6 +1577,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1613,11 +1643,13 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("read-only mode"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("read-only mode")
+        );
     }
 
     #[tokio::test]
@@ -1632,11 +1664,13 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("Rate limit exceeded"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Rate limit exceeded")
+        );
     }
 
     #[tokio::test]
@@ -1657,6 +1691,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1670,11 +1705,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("Failed to create provider"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Failed to create provider")
+        );
     }
 
     #[tokio::test]
@@ -1695,6 +1732,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1708,11 +1746,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("Failed to create provider"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Failed to create provider")
+        );
     }
 
     #[test]
@@ -1744,11 +1784,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("allowed_tools is empty"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("allowed_tools is empty")
+        );
     }
 
     #[tokio::test]
@@ -1767,11 +1809,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("no executable tools"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("no executable tools")
+        );
     }
 
     #[tokio::test]
@@ -1813,11 +1857,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("no executable tools"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("no executable tools")
+        );
     }
 
     #[tokio::test]
@@ -1833,11 +1879,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("maximum tool iterations (2)"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("maximum tool iterations (2)")
+        );
     }
 
     #[tokio::test]
@@ -1853,11 +1901,13 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("provider boom"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("provider boom")
+        );
     }
 
     /// MCP tools pushed into the shared parent_tools handle after DelegateTool
@@ -1971,6 +2021,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
@@ -2024,6 +2075,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         struct MockShellTool;
@@ -2094,6 +2146,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
         assert_eq!(
             config.timeout_secs.unwrap_or(DEFAULT_DELEGATE_TIMEOUT_SECS),
@@ -2122,6 +2175,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
@@ -2155,6 +2209,7 @@ mod tests {
             timeout_secs: Some(60),
             agentic_timeout_secs: Some(600),
             skills_directory: None,
+            memory_namespace: None,
         };
         assert_eq!(
             config.timeout_secs.unwrap_or(DEFAULT_DELEGATE_TIMEOUT_SECS),
@@ -2210,6 +2265,7 @@ mod tests {
                 timeout_secs: Some(0),
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2237,6 +2293,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: Some(0),
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2264,6 +2321,7 @@ mod tests {
                 timeout_secs: Some(7200),
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2291,6 +2349,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: Some(5000),
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2318,6 +2377,7 @@ mod tests {
                 timeout_secs: Some(3600),
                 agentic_timeout_secs: Some(3600),
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         assert!(config.validate().is_ok());
@@ -2341,6 +2401,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         assert!(config.validate().is_ok());
@@ -2373,6 +2434,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: Some("skills/code-review".to_string()),
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
@@ -2419,6 +2481,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
