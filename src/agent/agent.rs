@@ -71,6 +71,7 @@ pub struct Agent {
     /// When MCP deferred loading is enabled, tools are activated via `tool_search`
     /// and stored here for lookup during tool execution.
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    intervention_rx: Option<tokio::sync::mpsc::Receiver<String>>,
 }
 
 pub struct AgentBuilder {
@@ -99,6 +100,7 @@ pub struct AgentBuilder {
     security_summary: Option<String>,
     autonomy_level: Option<crate::security::AutonomyLevel>,
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    intervention_rx: Option<tokio::sync::mpsc::Receiver<String>>,
 }
 
 impl AgentBuilder {
@@ -129,6 +131,7 @@ impl AgentBuilder {
             security_summary: None,
             autonomy_level: None,
             activated_tools: None,
+            intervention_rx: None,
         }
     }
 
@@ -269,6 +272,14 @@ impl AgentBuilder {
         self
     }
 
+    pub fn intervention_rx(
+        mut self,
+        rx: Option<tokio::sync::mpsc::Receiver<String>>,
+    ) -> Self {
+        self.intervention_rx = rx;
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -325,6 +336,7 @@ impl AgentBuilder {
                 .autonomy_level
                 .unwrap_or(crate::security::AutonomyLevel::Supervised),
             activated_tools: self.activated_tools,
+            intervention_rx: self.intervention_rx,
         })
     }
 }
@@ -344,6 +356,19 @@ impl Agent {
 
     pub fn set_memory_session_id(&mut self, session_id: Option<String>) {
         self.memory_session_id = session_id;
+    }
+
+    pub fn with_extra_tools(mut self, extra_tools: Vec<Box<dyn Tool>>) -> Self {
+        for tool in extra_tools {
+            self.tool_specs.push(tool.spec());
+            self.tools.push(tool);
+        }
+        self
+    }
+
+    pub fn with_intervention_rx(mut self, rx: tokio::sync::mpsc::Receiver<String>) -> Self {
+        self.intervention_rx = Some(rx);
+        self
     }
 
     /// Hydrate the agent with prior chat messages (e.g. from a session backend).
@@ -803,6 +828,12 @@ impl Agent {
         let effective_model = self.classify_model(user_message);
 
         for _ in 0..self.config.max_tool_iterations {
+            if let Some(rx) = &mut self.intervention_rx {
+                while let Ok(msg) = rx.try_recv() {
+                    self.history.push(ConversationMessage::Chat(ChatMessage::user(format!("[系统插播/用户临时干预]: {}", msg))));
+                }
+            }
+
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts)
@@ -974,6 +1005,12 @@ impl Agent {
 
         // ── Turn loop ──────────────────────────────────────────────────
         for _ in 0..self.config.max_tool_iterations {
+            if let Some(rx) = &mut self.intervention_rx {
+                while let Ok(msg) = rx.try_recv() {
+                    self.history.push(ConversationMessage::Chat(ChatMessage::user(format!("[系统插播/用户临时干预]: {}", msg))));
+                }
+            }
+
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
 
             // Response cache check (same as turn)
