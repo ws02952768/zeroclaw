@@ -135,6 +135,10 @@ impl RuntimeAdapter for DockerRuntime {
             process.arg("--volume").arg(vol);
         }
 
+        for (k, v) in &self.config.environment {
+            process.arg("-e").arg(format!("{}={}", k, v));
+        }
+
         process
             .arg(self.config.image.trim())
             .arg("sh")
@@ -174,6 +178,7 @@ mod tests {
             mount_workspace: true,
             allowed_workspace_roots: Vec::new(),
             volumes: Vec::new(),
+            environment: std::collections::HashMap::new(),
         };
         let runtime = DockerRuntime::new(cfg);
 
