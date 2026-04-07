@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "zeroclawlabs"
-version = "0.6.7"
+version = "0.6.8"
 edition = "2024"
 authors = ["theonlyhennygod"]
 license = "MIT OR Apache-2.0"
@@ -296,7 +296,7 @@ ci-all = [
 
 [profile.dev]
 incremental = true
-opt-level = 1
+opt-level = 0
 
 [profile.release]
 opt-level = "z"      # Optimize for size

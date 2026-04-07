@@ -24,11 +24,12 @@ const PORT_POLL_MS: u64 = 500;
 
 // ── PicoFlashTool ─────────────────────────────────────────────────────────────
 
-/// Tool: flash ZeroClaw MicroPython firmware to a Pico in BOOTSEL mode.
+/// Tool: flash ZeroClaw firmware to a Pico in BOOTSEL mode.
 ///
 /// The Pico must be connected with BOOTSEL held so it mounts as `RPI-RP2`.
-/// After flashing, the tool reconnects the serial transport in the 
-/// [`DeviceRegistry`] so subsequent `gpio_write` calls work immediately.
+/// After flashing, the tool reconnects the serial transport in the
+/// [`DeviceRegistry`] so subsequent `gpio_write` calls work immediately
+/// without restarting ZeroClaw.
 pub struct PicoFlashTool {
     registry: Arc<RwLock<DeviceRegistry>>,
 }
@@ -141,7 +142,7 @@ impl Tool for PicoFlashTool {
                     output: String::new(),
                     error: Some(format!(
                         "UF2 copied to {} but serial port did not appear within {PORT_WAIT_SECS}s. \
-                         Unplug and replug the Pico manually.",
+                         Unplug and replug the Pico, then restart ZeroClaw.",
                         mount.display()
                     )),
                 });
@@ -149,6 +150,8 @@ impl Tool for PicoFlashTool {
         };
 
         tracing::info!(port = %port.display(), "Pico serial port online after UF2 flash");
+
+        let final_port = Some(port);
 
         // ── 6. Reconnect serial transport in DeviceRegistry ──────────────
         //
@@ -172,8 +175,8 @@ impl Tool for PicoFlashTool {
             None => Err(anyhow::anyhow!("no serial port to reconnect")),
         };
 
-        // ── 9. Return result ──────────────────────────────────────────────
-        match Some(port) {
+        // ── 7. Return result ──────────────────────────────────────────────
+        match final_port {
             Some(p) => {
                 let port_str = p.display().to_string();
                 let reconnected = reconnect_result.is_ok();
@@ -201,7 +204,8 @@ impl Tool for PicoFlashTool {
                 success: true,
                 output: format!(
                     "Pico flashed successfully. \
-                         Serial port did not reappear within {PORT_WAIT_SECS}s."
+                         Serial port did not reappear within {PORT_WAIT_SECS}s — \
+                         unplug and replug the Pico, then restart ZeroClaw to connect as pico0."
                 ),
                 error: None,
             }),
