@@ -157,7 +157,7 @@ impl Tool for PicoFlashTool {
         //
         // The old transport still points at a stale port handle from before
         // the flash. Reconnect so gpio_write works immediately.
-        let reconnect_result = match Some(&port) {
+        let reconnect_result = match final_port.as_ref() {
             Some(p) => {
                 let port_str = p.to_string_lossy();
                 let mut reg = self.registry.write().await;
