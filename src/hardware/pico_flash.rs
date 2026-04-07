@@ -4,10 +4,9 @@
 //! 1. User holds BOOTSEL while plugging in Pico → RPI-RP2 drive appears.
 //! 2. User asks "flash my pico".
 //! 3. LLM calls `pico_flash(confirm=true)`.
-//! 4. Tool copies UF2 to RPI-RP2 drive; Pico reboots into the firmware.
+//! 4. Tool copies UF2 to RPI-RP2 drive; Pico reboots silently.
 //! 5. Tool waits up to 20 s for `/dev/cu.usbmodem*` to appear.
-//! 6. Tool reconnects the serial transport in the DeviceRegistry.
-//! 7. Tool returns success; user restarts ZeroClaw to get `pico0`.
+//! 6. Tool returns success; user restarts ZeroClaw to connect as `pico0` or runs it immediately if reconnected.
 
 use super::device::DeviceRegistry;
 use super::uf2;
@@ -158,7 +157,7 @@ impl Tool for PicoFlashTool {
         //
         // The old transport still points at a stale port handle from before
         // the flash. Reconnect so gpio_write works immediately.
-        let reconnect_result = match &final_port {
+        let reconnect_result = match Some(&port) {
             Some(p) => {
                 let port_str = p.to_string_lossy();
                 let mut reg = self.registry.write().await;

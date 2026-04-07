@@ -5458,6 +5458,14 @@ pub struct DockerRuntimeConfig {
     /// Optional workspace root allowlist for Docker mount validation.
     #[serde(default)]
     pub allowed_workspace_roots: Vec<String>,
+
+    /// Additional custom explicit docker volumes to mount (`Host:Container` or `Host:Container:mode`)
+    #[serde(default)]
+    pub volumes: Vec<String>,
+
+    /// Static environment variables to inject into the sandbox.
+    #[serde(default)]
+    pub environment: HashMap<String, String>,
 }
 
 fn default_runtime_kind() -> String {
@@ -5490,6 +5498,8 @@ impl Default for DockerRuntimeConfig {
             read_only_rootfs: true,
             mount_workspace: true,
             allowed_workspace_roots: Vec::new(),
+            volumes: Vec::new(),
+            environment: HashMap::new(),
         }
     }
 }

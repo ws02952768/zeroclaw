@@ -1248,14 +1248,14 @@ fn create_provider_with_url_and_options(
         ))),
         name if moonshot_base_url(name).is_some() => Ok(compat(OpenAiCompatibleProvider::new(
             "Moonshot",
-            moonshot_base_url(name).expect("checked in guard"),
+            api_url.unwrap_or_else(|| moonshot_base_url(name).expect("checked in guard")),
             key,
             AuthStyle::Bearer,
         ))),
         "kimi-code" | "kimi_coding" | "kimi_for_coding" => {
             Ok(compat(OpenAiCompatibleProvider::new_with_user_agent(
                 "Kimi Code",
-                "https://api.kimi.com/coding/v1",
+                api_url.unwrap_or("https://api.kimi.com/coding/v1"),
                 key,
                 AuthStyle::Bearer,
                 "KimiCLI/0.77",
@@ -1263,32 +1263,32 @@ fn create_provider_with_url_and_options(
         }
         "synthetic" => Ok(compat(OpenAiCompatibleProvider::new(
             "Synthetic",
-            "https://api.synthetic.new/openai/v1",
+            api_url.unwrap_or("https://api.synthetic.new/openai/v1"),
             key,
             AuthStyle::Bearer,
         ))),
         "opencode" | "opencode-zen" => Ok(compat(OpenAiCompatibleProvider::new(
             "OpenCode Zen",
-            "https://opencode.ai/zen/v1",
+            api_url.unwrap_or("https://opencode.ai/zen/v1"),
             key,
             AuthStyle::Bearer,
         ))),
         "opencode-go" => Ok(compat(OpenAiCompatibleProvider::new(
             "OpenCode Go",
-            "https://opencode.ai/zen/go/v1",
+            api_url.unwrap_or("https://opencode.ai/zen/go/v1"),
             key,
             AuthStyle::Bearer,
         ))),
         name if zai_base_url(name).is_some() => Ok(compat(OpenAiCompatibleProvider::new(
             "Z.AI",
-            zai_base_url(name).expect("checked in guard"),
+            api_url.unwrap_or_else(|| zai_base_url(name).expect("checked in guard")),
             key,
             AuthStyle::ZhipuJwt,
         ))),
         name if glm_base_url(name).is_some() => {
             Ok(compat(OpenAiCompatibleProvider::new_no_responses_fallback(
                 "GLM",
-                glm_base_url(name).expect("checked in guard"),
+                api_url.unwrap_or_else(|| glm_base_url(name).expect("checked in guard")),
                 key,
                 AuthStyle::ZhipuJwt,
             )))
@@ -1296,7 +1296,7 @@ fn create_provider_with_url_and_options(
         name if minimax_base_url(name).is_some() => Ok(compat(
             OpenAiCompatibleProvider::new_merge_system_into_user(
                 "MiniMax",
-                minimax_base_url(name).expect("checked in guard"),
+                api_url.unwrap_or_else(|| minimax_base_url(name).expect("checked in guard")),
                 key,
                 AuthStyle::Bearer,
             ),
