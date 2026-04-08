@@ -429,6 +429,10 @@ pub struct Config {
     #[serde(default)]
     pub sop: SopConfig,
 
+    /// Core builtin flat tools explicitly allowed list (`[tools]`).
+    #[serde(default)]
+    pub tools: ToolsConfig,
+
     /// Shell tool configuration (`[shell_tool]`).
     #[serde(default)]
     pub shell_tool: ShellToolConfig,
@@ -480,6 +484,13 @@ impl Default for WorkspaceConfig {
             cross_workspace_search: false,
         }
     }
+}
+
+/// Core builtin tools filtering.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct ToolsConfig {
+    /// List of explicit builtin tool names. If None, it defaults to all.
+    pub enabled_builtin: Option<Vec<String>>,
 }
 
 /// Named provider profile definition compatible with Codex app-server style config.
@@ -8382,6 +8393,7 @@ impl Default for Config {
             api_key: None,
             api_url: None,
             api_path: None,
+            tools: ToolsConfig::default(),
             default_provider: Some("openrouter".to_string()),
             default_model: Some("anthropic/claude-sonnet-4.6".to_string()),
             model_providers: HashMap::new(),
@@ -11479,6 +11491,7 @@ auto_save = true
             api_key: Some("sk-test-key".into()),
             api_url: None,
             api_path: None,
+            tools: ToolsConfig::default(),
             default_provider: Some("openrouter".into()),
             default_model: Some("gpt-4o".into()),
             model_providers: HashMap::new(),
@@ -12088,6 +12101,7 @@ default_temperature = 0.7
             api_key: Some("sk-roundtrip".into()),
             api_url: None,
             api_path: None,
+            tools: ToolsConfig::default(),
             default_provider: Some("openrouter".into()),
             default_model: Some("test-model".into()),
             model_providers: HashMap::new(),

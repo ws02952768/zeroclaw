@@ -212,6 +212,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         gemini_cli: crate::config::GeminiCliConfig::default(),
         opencode_cli: crate::config::OpenCodeCliConfig::default(),
         sop: crate::config::SopConfig::default(),
+        tools: crate::config::schema::ToolsConfig::default(),
         shell_tool: crate::config::ShellToolConfig::default(),
     };
 
@@ -670,6 +671,7 @@ async fn run_quick_setup_with_home(
         gemini_cli: crate::config::GeminiCliConfig::default(),
         opencode_cli: crate::config::OpenCodeCliConfig::default(),
         sop: crate::config::SopConfig::default(),
+        tools: crate::config::schema::ToolsConfig::default(),
         shell_tool: crate::config::ShellToolConfig::default(),
     };
 
