@@ -32,6 +32,8 @@ pub struct MediaAttachment {
     pub data: Vec<u8>,
     /// MIME type if known (e.g. `audio/ogg`, `image/jpeg`).
     pub mime_type: Option<String>,
+    /// Download code or URL for deferred download (e.g. DingTalk `downloadCode`).
+    pub download_code: Option<String>,
 }
 
 impl MediaAttachment {
@@ -221,6 +223,7 @@ mod tests {
             file_name: "voice.ogg".to_string(),
             data: vec![0u8; 100],
             mime_type: Some("audio/ogg".to_string()),
+            download_code: None,
         }
     }
 
@@ -229,6 +232,7 @@ mod tests {
             file_name: "photo.jpg".to_string(),
             data: vec![0u8; 50],
             mime_type: Some("image/jpeg".to_string()),
+            download_code: None,
         }
     }
 
@@ -237,6 +241,7 @@ mod tests {
             file_name: "clip.mp4".to_string(),
             data: vec![0u8; 200],
             mime_type: Some("video/mp4".to_string()),
+            download_code: None,
         }
     }
 
@@ -246,6 +251,7 @@ mod tests {
             file_name: "file".to_string(),
             data: vec![],
             mime_type: Some("audio/ogg".to_string()),
+            download_code: None,
         };
         assert_eq!(audio.kind(), MediaKind::Audio);
 
@@ -253,6 +259,7 @@ mod tests {
             file_name: "file".to_string(),
             data: vec![],
             mime_type: Some("image/png".to_string()),
+            download_code: None,
         };
         assert_eq!(image.kind(), MediaKind::Image);
 
@@ -260,6 +267,7 @@ mod tests {
             file_name: "file".to_string(),
             data: vec![],
             mime_type: Some("video/mp4".to_string()),
+            download_code: None,
         };
         assert_eq!(video.kind(), MediaKind::Video);
     }
@@ -270,6 +278,7 @@ mod tests {
             file_name: "voice.ogg".to_string(),
             data: vec![],
             mime_type: None,
+            download_code: None,
         };
         assert_eq!(audio.kind(), MediaKind::Audio);
 
@@ -277,6 +286,7 @@ mod tests {
             file_name: "photo.png".to_string(),
             data: vec![],
             mime_type: None,
+            download_code: None,
         };
         assert_eq!(image.kind(), MediaKind::Image);
 
@@ -284,6 +294,7 @@ mod tests {
             file_name: "clip.mp4".to_string(),
             data: vec![],
             mime_type: None,
+            download_code: None,
         };
         assert_eq!(video.kind(), MediaKind::Video);
 
@@ -291,6 +302,7 @@ mod tests {
             file_name: "data.bin".to_string(),
             data: vec![],
             mime_type: None,
+            download_code: None,
         };
         assert_eq!(unknown.kind(), MediaKind::Unknown);
     }

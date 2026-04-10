@@ -224,7 +224,7 @@ pub async fn wait_for_serial_port(
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
-        for pattern in *patterns {
+        for pattern in patterns.iter() {
             if let Ok(mut hits) = glob::glob(pattern) {
                 if let Some(Ok(path)) = hits.next() {
                     return Some(path);

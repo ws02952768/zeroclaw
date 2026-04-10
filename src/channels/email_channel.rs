@@ -265,6 +265,7 @@ impl EmailChannel {
                 file_name,
                 data,
                 mime_type: mime_str,
+                download_code: None,
             });
         }
         attachments

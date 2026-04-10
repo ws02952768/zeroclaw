@@ -122,14 +122,7 @@ impl Channel for DingTalkChannel {
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         let webhooks = self.session_webhooks.read().await;
-        let webhook_url = webhooks.get(&message.recipient).ok_or_else(|| {
-            anyhow::anyhow!(
-                "No session webhook found for chat {}. \
-                 The user must send a message first to establish a session.",
-                message.recipient
-            )
-        })?;
-
+        
         let title = message.subject.as_deref().unwrap_or("ZeroClaw");
         let body = serde_json::json!({
             "msgtype": "markdown",
@@ -139,17 +132,90 @@ impl Channel for DingTalkChannel {
             }
         });
 
-        let resp = self
-            .http_client()
-            .post(webhook_url)
-            .json(&body)
+        // 1. Try standard Session Webhook first (Stream Mode)
+        if let Some(webhook_url) = webhooks.get(&message.recipient) {
+            let resp = self
+                .http_client()
+                .post(webhook_url)
+                .json(&body)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let err = resp.text().await.unwrap_or_default();
+                anyhow::bail!("DingTalk webhook reply failed ({status}): {err}");
+            }
+            return Ok(());
+        }
+
+        // 2. Fallback: Proactive Batch Send via DingTalk OpenAPI
+        tracing::info!("No session webhook found for chat {}. Falling back to proactive batchSend API.", message.recipient);
+
+        if self.client_id.is_empty() || self.client_secret.is_empty() {
+            anyhow::bail!("DingTalk client_id and client_secret must be configured for proactive push");
+        }
+
+        // 2a. Fetch Access Token
+        let token_resp = self.http_client()
+            .get(format!("https://oapi.dingtalk.com/gettoken?appkey={}&appsecret={}", self.client_id, self.client_secret))
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err = resp.text().await.unwrap_or_default();
-            anyhow::bail!("DingTalk webhook reply failed ({status}): {err}");
+        if !token_resp.status().is_success() {
+            anyhow::bail!("Failed to get DingTalk access token: HTTP {}", token_resp.status());
+        }
+
+        #[derive(serde::Deserialize)]
+        struct TokenResponse {
+            errcode: i32,
+            access_token: Option<String>,
+            errmsg: Option<String>,
+        }
+
+        let token_data: TokenResponse = token_resp.json().await?;
+        if token_data.errcode != 0 {
+            anyhow::bail!("DingTalk gettoken failed: {:?}", token_data.errmsg);
+        }
+
+        let access_token = token_data.access_token.unwrap_or_default();
+
+        // 2b. Send Proactive Message
+        let msg_param = serde_json::json!({
+            "title": title,
+            "text": message.content
+        }).to_string();
+
+        let req_body = serde_json::json!({
+            "robotCode": self.client_id,
+            "userIds": [message.recipient],
+            "msgKey": "sampleMarkdown",
+            "msgParam": msg_param
+        });
+
+        let send_resp = self.http_client()
+            .post("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend")
+            .header("x-acs-dingtalk-access-token", access_token)
+            .json(&req_body)
+            .send()
+            .await?;
+
+        if !send_resp.status().is_success() {
+            let status = send_resp.status();
+            let err = send_resp.text().await.unwrap_or_default();
+            anyhow::bail!("DingTalk proactive push failed ({status}): {err}");
+        }
+
+        let resp_text = send_resp.text().await.unwrap_or_default();
+        tracing::info!("DingTalk Proactive Push Response: {}", resp_text);
+        
+        // Parse the response to strictly catch business errors
+        if let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+            if let Some(code) = resp_json.get("code") {
+                // If "code" exists, it's usually an error (DingTalk V1.0 API error format)
+                let message = resp_json.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+                anyhow::bail!("DingTalk proactive push business error: [{}] {}", code, message);
+            }
         }
 
         Ok(())
@@ -225,14 +291,54 @@ impl Channel for DingTalkChannel {
                     };
 
                     // Extract message content
-                    let content = data
+                    let mut content = data
                         .get("text")
                         .and_then(|t| t.get("content"))
                         .and_then(|c| c.as_str())
                         .unwrap_or("")
-                        .trim();
+                        .trim()
+                        .to_string();
 
-                    if content.is_empty() {
+                    let mut attachments = vec![];
+                    let msgtype = data.get("msgtype").and_then(|t| t.as_str()).unwrap_or("");
+
+                    if msgtype == "file" || msgtype == "image" || msgtype == "audio" || msgtype == "video" || msgtype == "picture" || msgtype == "richText" {
+                        let content_obj = data.get("content");
+                        let parsed_content: Option<serde_json::Value> = content_obj.and_then(|c| {
+                            if let Some(s) = c.as_str() {
+                                serde_json::from_str(s).ok()
+                            } else {
+                                Some(c.clone())
+                            }
+                        });
+                        let target_obj = parsed_content.as_ref().or(content_obj);
+
+                        let download_code = target_obj.and_then(|c| c.get("downloadCode")).and_then(|v| v.as_str())
+                            .or_else(|| data.get("downloadCode").and_then(|v| v.as_str()));
+                        
+                        let url = target_obj.and_then(|c| c.get("picUrl").or(c.get("downloadUrl"))).and_then(|v| v.as_str());
+
+                        let file_name = target_obj.and_then(|c| c.get("fileName").or(c.get("file_name"))).and_then(|v| v.as_str())
+                            .or_else(|| data.get("fileName").and_then(|v| v.as_str()))
+                            .unwrap_or("unnamed_dingtalk_file")
+                            .to_string();
+
+                        if download_code.is_some() || url.is_some() {
+                            attachments.push(super::media_pipeline::MediaAttachment {
+                                file_name: file_name.clone(),
+                                data: vec![],
+                                mime_type: None,
+                                download_code: download_code.map(|s| s.to_string()),
+                            });
+                            
+                            // If the user sent a file with NO text, inject a default prompt.
+                            if content.is_empty() {
+                                content = format!("请查阅我发送的文件：{}", file_name);
+                            }
+                        }
+                    }
+
+                    if content.is_empty() && attachments.is_empty() {
                         continue;
                     }
 
@@ -290,7 +396,7 @@ impl Channel for DingTalkChannel {
                             .as_secs(),
                         thread_ts: None,
                         interruption_scope_id: None,
-                        attachments: vec![],
+                        attachments,
                     };
 
                     if tx.send(channel_msg).await.is_err() {
