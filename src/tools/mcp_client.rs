@@ -162,9 +162,26 @@ impl McpServer {
     pub async fn call_tool(
         &self,
         tool_name: &str,
-        arguments: serde_json::Value,
+        mut arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let mut inner = self.inner.lock().await;
+        
+        // Merge extra_tool_params into arguments if available
+        if !inner.config.extra_tool_params.is_empty() {
+            if let Some(obj) = arguments.as_object_mut() {
+                for (k, v) in &inner.config.extra_tool_params {
+                    // Only insert if the key doesn't already exist from the LLM
+                     obj.entry(k).or_insert_with(|| serde_json::Value::String(v.clone()));
+                }
+            } else if arguments.is_null() {
+                let mut obj = serde_json::Map::new();
+                for (k, v) in &inner.config.extra_tool_params {
+                    obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
+                arguments = serde_json::Value::Object(obj);
+            }
+        }
+
         let id = inner.next_id.fetch_add(1, Ordering::Relaxed) as u64;
         let req = JsonRpcRequest::new(
             id,
@@ -316,6 +333,7 @@ mod tests {
             transport: McpTransport::Stdio,
             url: None,
             headers: std::collections::HashMap::default(),
+            extra_tool_params: std::collections::HashMap::default(),
         };
         let result = McpServer::connect(config).await;
         assert!(result.is_err());
@@ -335,6 +353,7 @@ mod tests {
             transport: McpTransport::Stdio,
             url: None,
             headers: std::collections::HashMap::default(),
+            extra_tool_params: std::collections::HashMap::default(),
         }];
         let registry = McpRegistry::connect_all(&configs)
             .await

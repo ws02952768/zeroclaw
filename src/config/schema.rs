@@ -945,6 +945,9 @@ pub struct McpServerConfig {
     /// Optional HTTP headers for HTTP/SSE transports.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Optional extra parameters to inject into the payload of every tool call.
+    #[serde(default)]
+    pub extra_tool_params: HashMap<String, String>,
     /// Optional per-call timeout in seconds (hard capped in validation).
     #[serde(default)]
     pub tool_timeout_secs: Option<u64>,
