@@ -72,6 +72,7 @@ pub struct Agent {
     /// and stored here for lookup during tool execution.
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     intervention_rx: Option<tokio::sync::mpsc::Receiver<String>>,
+    break_on_tools: Vec<String>,
 }
 
 pub struct AgentBuilder {
@@ -101,6 +102,7 @@ pub struct AgentBuilder {
     autonomy_level: Option<crate::security::AutonomyLevel>,
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     intervention_rx: Option<tokio::sync::mpsc::Receiver<String>>,
+    break_on_tools: Option<Vec<String>>,
 }
 
 impl AgentBuilder {
@@ -132,6 +134,7 @@ impl AgentBuilder {
             autonomy_level: None,
             activated_tools: None,
             intervention_rx: None,
+            break_on_tools: None,
         }
     }
 
@@ -272,11 +275,13 @@ impl AgentBuilder {
         self
     }
 
-    pub fn intervention_rx(
-        mut self,
-        rx: Option<tokio::sync::mpsc::Receiver<String>>,
-    ) -> Self {
+    pub fn intervention_rx(mut self, rx: Option<tokio::sync::mpsc::Receiver<String>>) -> Self {
         self.intervention_rx = rx;
+        self
+    }
+
+    pub fn break_on_tools(mut self, tools: Vec<String>) -> Self {
+        self.break_on_tools = Some(tools);
         self
     }
 
@@ -337,6 +342,7 @@ impl AgentBuilder {
                 .unwrap_or(crate::security::AutonomyLevel::Supervised),
             activated_tools: self.activated_tools,
             intervention_rx: self.intervention_rx,
+            break_on_tools: self.break_on_tools.unwrap_or_default(),
         })
     }
 }
@@ -369,6 +375,13 @@ impl Agent {
     pub fn remove_tool(mut self, name: &str) -> Self {
         self.tools.retain(|t| t.name() != name);
         self.tool_specs.retain(|s| s.name != name);
+        self
+    }
+
+    pub fn add_break_on_tool(mut self, name: &str) -> Self {
+        if !self.break_on_tools.contains(&name.to_string()) {
+            self.break_on_tools.push(name.to_string());
+        }
         self
     }
 
@@ -610,9 +623,10 @@ impl Agent {
 
         // Prevent strictly-typed LLM APIs (like vLLM) from throwing "No user query found"
         // by parsing for the first user prompt and anchoring it at index 0.
-        if let Some(user_idx) = other_messages.iter().position(|m| {
-            matches!(m, ConversationMessage::Chat(chat) if chat.role == "user")
-        }) {
+        if let Some(user_idx) = other_messages
+            .iter()
+            .position(|m| matches!(m, ConversationMessage::Chat(chat) if chat.role == "user"))
+        {
             if user_idx > 0 {
                 let user_msg = other_messages.remove(user_idx);
                 other_messages.insert(0, user_msg);
@@ -836,7 +850,11 @@ impl Agent {
         for _ in 0..self.config.max_tool_iterations {
             if let Some(rx) = &mut self.intervention_rx {
                 while let Ok(msg) = rx.try_recv() {
-                    self.history.push(ConversationMessage::Chat(ChatMessage::user(format!("[系统插播/用户临时干预]: {}", msg))));
+                    self.history
+                        .push(ConversationMessage::Chat(ChatMessage::user(format!(
+                            "[系统插播/用户临时干预]: {}",
+                            msg
+                        ))));
                 }
             }
 
@@ -945,6 +963,11 @@ impl Agent {
             let formatted = self.tool_dispatcher.format_results(&results);
             self.history.push(formatted);
             self.trim_history();
+
+            // Hardware break for interactive tools to prevent loop continuation without real input
+            if results.iter().any(|r| self.break_on_tools.contains(&r.name)) {
+                return Ok(String::new());
+            }
         }
 
         anyhow::bail!(
@@ -1013,7 +1036,11 @@ impl Agent {
         for _ in 0..self.config.max_tool_iterations {
             if let Some(rx) = &mut self.intervention_rx {
                 while let Ok(msg) = rx.try_recv() {
-                    self.history.push(ConversationMessage::Chat(ChatMessage::user(format!("[系统插播/用户临时干预]: {}", msg))));
+                    self.history
+                        .push(ConversationMessage::Chat(ChatMessage::user(format!(
+                            "[系统插播/用户临时干预]: {}",
+                            msg
+                        ))));
                 }
             }
 
@@ -1109,7 +1136,13 @@ impl Agent {
                                     args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
                                 })
                                 .await;
+                            
+                            let name_clone = tc.name.clone();
                             streamed_tool_calls.push(tc);
+
+                            if self.break_on_tools.contains(&name_clone) {
+                                break;
+                            }
                         }
                         crate::providers::traits::StreamEvent::PreExecutedToolCall {
                             name,
@@ -1117,11 +1150,15 @@ impl Agent {
                         } => {
                             let _ = event_tx
                                 .send(TurnEvent::ToolCall {
-                                    name,
+                                    name: name.clone(),
                                     args: serde_json::from_str(&args).unwrap_or_default(),
                                 })
                                 .await;
                             // NOT pushed to streamed_tool_calls — already executed by proxy
+                            
+                            if self.break_on_tools.contains(&name) {
+                                break;
+                            }
                         }
                         crate::providers::traits::StreamEvent::PreExecutedToolResult {
                             name,
