@@ -366,6 +366,12 @@ impl Agent {
         self
     }
 
+    pub fn remove_tool(mut self, name: &str) -> Self {
+        self.tools.retain(|t| t.name() != name);
+        self.tool_specs.retain(|s| s.name != name);
+        self
+    }
+
     pub fn with_intervention_rx(mut self, rx: tokio::sync::mpsc::Receiver<String>) -> Self {
         self.intervention_rx = Some(rx);
         self
