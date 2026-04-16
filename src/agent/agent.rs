@@ -1286,6 +1286,11 @@ impl Agent {
             let formatted = self.tool_dispatcher.format_results(&results);
             self.history.push(formatted);
             self.trim_history();
+
+            // Check if any executed tool is in break_on_tools. If so, immediately end the turn!
+            if results.iter().any(|r| self.break_on_tools.contains(&r.name)) {
+                return Ok(String::new());
+            }
         }
 
         anyhow::bail!(
