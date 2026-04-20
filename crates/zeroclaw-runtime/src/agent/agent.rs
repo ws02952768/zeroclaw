@@ -348,6 +348,14 @@ impl Agent {
         self.history.clear();
     }
 
+    pub fn with_extra_tools(mut self, extra_tools: Vec<Box<dyn Tool>>) -> Self {
+        for tool in extra_tools {
+            self.tool_specs.push(tool.spec());
+            self.tools.push(tool);
+        }
+        self
+    }
+
     pub fn set_memory_session_id(&mut self, session_id: Option<String>) {
         self.memory_session_id = session_id;
     }

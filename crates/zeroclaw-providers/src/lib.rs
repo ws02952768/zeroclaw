@@ -1298,14 +1298,21 @@ fn create_provider_with_url_and_options(
                 AuthStyle::ZhipuJwt,
             )))
         }
-        name if minimax_base_url(name).is_some() => Ok(compat(
-            OpenAiCompatibleProvider::new_merge_system_into_user(
-                "MiniMax",
-                minimax_base_url(name).expect("checked in guard"),
-                key,
-                AuthStyle::Bearer,
-            ),
-        )),
+        name if minimax_base_url(name).is_some() => {
+            let default_url = minimax_base_url(name).expect("checked in guard");
+            let base_url = api_url
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(default_url);
+            Ok(compat(
+                OpenAiCompatibleProvider::new_merge_system_into_user(
+                    "MiniMax",
+                    base_url,
+                    key,
+                    AuthStyle::Bearer,
+                ),
+            ))
+        }
         "azure_openai" | "azure-openai" | "azure" => {
             let resource = std::env::var("AZURE_OPENAI_RESOURCE")
                 .unwrap_or_else(|_| "my-resource".to_string());
