@@ -138,6 +138,11 @@ pub struct Config {
     #[nested]
     pub runtime: RuntimeConfig,
 
+    /// Core builtin flat tools explicitly allowed list (`[tools]`).
+    #[serde(default)]
+    #[nested]
+    pub tools: ToolsConfig,
+
     /// Reliability settings: retries, fallback providers, backoff (`[reliability]`).
     #[serde(default)]
     #[nested]
@@ -502,6 +507,15 @@ impl Default for WorkspaceConfig {
             cross_workspace_search: false,
         }
     }
+}
+
+/// Core builtin tools filtering.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "tools"]
+pub struct ToolsConfig {
+    /// List of explicit builtin tool names. If None, it defaults to all.
+    pub enabled_builtin: Option<Vec<String>>,
 }
 
 /// Named provider profile definition.
@@ -970,6 +984,9 @@ pub struct McpServerConfig {
     /// Optional HTTP headers for HTTP/SSE transports.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Optional extra parameters to inject into the payload of every tool call.
+    #[serde(default)]
+    pub extra_tool_params: HashMap<String, serde_json::Value>,
     /// Optional per-call timeout in seconds (hard capped in validation).
     #[serde(default)]
     pub tool_timeout_secs: Option<u64>,
@@ -5749,6 +5766,14 @@ pub struct DockerRuntimeConfig {
     /// Optional workspace root allowlist for Docker mount validation.
     #[serde(default)]
     pub allowed_workspace_roots: Vec<String>,
+
+    /// Additional custom explicit docker volumes to mount (`Host:Container` or `Host:Container:mode`)
+    #[serde(default)]
+    pub volumes: Vec<String>,
+
+    /// Static environment variables to inject into the sandbox.
+    #[serde(default)]
+    pub environment: HashMap<String, String>,
 }
 
 fn default_runtime_kind() -> String {
@@ -5781,6 +5806,8 @@ impl Default for DockerRuntimeConfig {
             read_only_rootfs: true,
             mount_workspace: true,
             allowed_workspace_roots: Vec::new(),
+            volumes: Vec::new(),
+            environment: HashMap::new(),
         }
     }
 }
@@ -9105,6 +9132,7 @@ impl Default for Config {
             security: SecurityConfig::default(),
             security_ops: SecurityOpsConfig::default(),
             runtime: RuntimeConfig::default(),
+            tools: ToolsConfig::default(),
             reliability: ReliabilityConfig::default(),
             scheduler: SchedulerConfig::default(),
             agent: AgentConfig::default(),
@@ -11624,6 +11652,7 @@ auto_save = true
                 model_routes: Vec::new(),
                 embedding_routes: Vec::new(),
             },
+            tools: ToolsConfig::default(),
             workspace_dir: PathBuf::from("/tmp/test/workspace"),
             config_path: PathBuf::from("/tmp/test/config.toml"),
             observability: ObservabilityConfig {
@@ -12275,6 +12304,7 @@ default_temperature = 0.7
         let config = Config {
             schema_version: crate::migration::CURRENT_SCHEMA_VERSION,
             providers,
+            tools: ToolsConfig::default(),
             workspace_dir: dir.join("workspace"),
             config_path: config_path.clone(),
             observability: ObservabilityConfig::default(),

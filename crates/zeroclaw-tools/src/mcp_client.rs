@@ -160,9 +160,19 @@ impl McpServer {
     pub async fn call_tool(
         &self,
         tool_name: &str,
-        arguments: serde_json::Value,
+        mut arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let mut inner = self.inner.lock().await;
+
+        // Inject extra parameters into the payload
+        if !inner.config.extra_tool_params.is_empty() {
+            if let Some(obj) = arguments.as_object_mut() {
+                for (k, v) in &inner.config.extra_tool_params {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
         let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
         let req = JsonRpcRequest::new(
             id,

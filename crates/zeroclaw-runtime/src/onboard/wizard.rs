@@ -383,6 +383,7 @@ pub async fn run_wizard(force: bool, callbacks: WizardCallbacks) -> Result<Confi
         security: zeroclaw_config::schema::SecurityConfig::default(),
         security_ops: zeroclaw_config::schema::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
+        tools: Default::default(),
         reliability: zeroclaw_config::schema::ReliabilityConfig::default(),
         scheduler: zeroclaw_config::schema::SchedulerConfig::default(),
         agent: zeroclaw_config::schema::AgentConfig::default(),
@@ -830,7 +831,6 @@ async fn run_quick_setup_with_home(
 
     // Create memory config based on backend choice
     let memory_config = memory_config_defaults_for_backend(&memory_backend_name);
-
     let config = Config {
         workspace_dir: workspace_dir.clone(),
         config_path: config_path.clone(),
@@ -862,6 +862,7 @@ async fn run_quick_setup_with_home(
         security: zeroclaw_config::schema::SecurityConfig::default(),
         security_ops: zeroclaw_config::schema::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
+        tools: Default::default(),
         reliability: zeroclaw_config::schema::ReliabilityConfig::default(),
         scheduler: zeroclaw_config::schema::SchedulerConfig::default(),
         agent: zeroclaw_config::schema::AgentConfig::default(),

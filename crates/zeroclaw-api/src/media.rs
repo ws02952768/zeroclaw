@@ -16,6 +16,8 @@ pub struct MediaAttachment {
     pub data: Vec<u8>,
     /// MIME type if known (e.g. `audio/ogg`, `image/jpeg`).
     pub mime_type: Option<String>,
+    /// Download code or URL for deferred download (e.g. DingTalk `downloadCode`).
+    pub download_code: Option<String>,
 }
 
 impl MediaAttachment {

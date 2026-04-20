@@ -331,8 +331,11 @@ pub fn all_tools_with_runtime(
     Option<ChannelMapHandle>,
 ) {
     let has_shell_access = runtime.has_shell_access();
-    let sandbox = create_sandbox(&root_config.security);
-    let mut tool_arcs: Vec<Arc<dyn Tool>> = vec![
+    let mut sandbox = create_sandbox(&root_config.security);
+    if root_config.runtime.kind == "docker" || root_config.tunnel.cloudflare.is_some() {
+        sandbox = Arc::new(crate::security::NoopSandbox);
+    }
+    let core_tool_arcs: Vec<Arc<dyn Tool>> = vec![
         Arc::new(RateLimitedTool::new(
             PathGuardedTool::new(
                 ShellTool::new_with_sandbox(security.clone(), runtime, sandbox)
@@ -376,6 +379,17 @@ pub fn all_tools_with_runtime(
         Arc::new(WeatherTool::new()),
         Arc::new(CanvasTool::new(canvas_store.unwrap_or_default())),
     ];
+
+    let mut tool_arcs: Vec<Arc<dyn Tool>> = Vec::new();
+    if let Some(enabled) = &root_config.tools.enabled_builtin {
+        for t in core_tool_arcs {
+            if enabled.contains(&t.name().to_string()) {
+                tool_arcs.push(t);
+            }
+        }
+    } else {
+        tool_arcs = core_tool_arcs;
+    }
 
     // Register discord_search if discord_history channel is configured
     if root_config.channels.discord_history.is_some() {
