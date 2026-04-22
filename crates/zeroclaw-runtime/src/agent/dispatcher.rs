@@ -69,6 +69,15 @@ impl XmlToolDispatcher {
                     }
                     Err(e) => {
                         tracing::warn!("Malformed <tool_call> JSON: {e}");
+                        // Generate a synthetic tool call so the LLM receives the error and tries again
+                        calls.push(ParsedToolCall {
+                            name: "system_error_feedback".to_string(),
+                            arguments: serde_json::json!({
+                                "error_message": format!("Your last <tool_call> failed to parse as valid JSON. Error: {}. Please ensure you output valid JSON with matching braces before the </tool_call> tag and try again.", e),
+                                "original_malformed_content": inner.trim()
+                            }),
+                            tool_call_id: None,
+                        });
                     }
                 }
                 remaining = &remaining[start + end + 12..];

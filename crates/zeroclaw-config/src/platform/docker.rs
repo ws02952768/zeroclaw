@@ -125,6 +125,17 @@ impl RuntimeAdapter for DockerRuntime {
                 .arg(format!("{}:/workspace:rw", host_workspace.display()))
                 .arg("--workdir")
                 .arg("/workspace");
+        } else if !self.config.volumes.is_empty() {
+            // Even if bulk mount is disabled, if we pass custom volumes, 
+            // ensure the shell starts in /workspace where the slices are mounted
+            process
+                .arg("--workdir")
+                .arg("/workspace");
+        }
+
+        // Apply dynamically provided JIT Volumes
+        for vol in &self.config.volumes {
+            process.arg("--volume").arg(vol);
         }
 
         process
