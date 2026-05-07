@@ -3,11 +3,19 @@ use serde_json::Value;
 use std::fmt::Write;
 use zeroclaw_providers::{ChatMessage, ChatResponse, ConversationMessage, ToolResultMessage};
 
+const SYSTEM_ERROR_FEEDBACK_TOOL: &str = "__system_error_feedback";
+
 #[derive(Debug, Clone)]
 pub struct ParsedToolCall {
     pub name: String,
     pub arguments: Value,
     pub tool_call_id: Option<String>,
+}
+
+impl ParsedToolCall {
+    pub fn is_internal_feedback(&self) -> bool {
+        self.name == SYSTEM_ERROR_FEEDBACK_TOOL
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -16,6 +24,12 @@ pub struct ToolExecutionResult {
     pub output: String,
     pub success: bool,
     pub tool_call_id: Option<String>,
+}
+
+impl ToolExecutionResult {
+    pub fn is_internal_feedback(&self) -> bool {
+        self.name == SYSTEM_ERROR_FEEDBACK_TOOL
+    }
 }
 
 pub trait ToolDispatcher: Send + Sync {
@@ -46,7 +60,11 @@ impl XmlToolDispatcher {
 
             if let Some(end) = remaining[start..].find("</tool_call>") {
                 let inner = &remaining[start + 11..start + end];
-                match serde_json::from_str::<Value>(inner.trim()) {
+                if inner.trim().is_empty() {
+                    remaining = &remaining[start + end + 12..];
+                    continue;
+                }
+                match Self::parse_tool_call_json(inner.trim()) {
                     Ok(parsed) => {
                         let name = parsed
                             .get("name")
@@ -69,9 +87,10 @@ impl XmlToolDispatcher {
                     }
                     Err(e) => {
                         tracing::warn!("Malformed <tool_call> JSON: {e}");
-                        // Generate a synthetic tool call so the LLM receives the error and tries again
+                        // Generate internal feedback so the LLM receives the error and tries again
+                        // without surfacing a fake user-visible tool call.
                         calls.push(ParsedToolCall {
-                            name: "system_error_feedback".to_string(),
+                            name: SYSTEM_ERROR_FEEDBACK_TOOL.to_string(),
                             arguments: serde_json::json!({
                                 "error_message": format!("Your last <tool_call> failed to parse as valid JSON. Error: {}. Please ensure you output valid JSON with matching braces before the </tool_call> tag and try again.", e),
                                 "original_malformed_content": inner.trim()
@@ -91,6 +110,67 @@ impl XmlToolDispatcher {
         }
 
         (text_parts.join("\n"), calls)
+    }
+
+    fn parse_tool_call_json(raw: &str) -> serde_json::Result<Value> {
+        match serde_json::from_str::<Value>(raw) {
+            Ok(parsed) => Ok(parsed),
+            Err(original_error) => {
+                let Some(repaired) = Self::repair_truncated_json(raw) else {
+                    return Err(original_error);
+                };
+                match serde_json::from_str::<Value>(&repaired) {
+                    Ok(parsed) => {
+                        tracing::warn!(
+                            "Repaired truncated <tool_call> JSON by appending missing closers"
+                        );
+                        Ok(parsed)
+                    }
+                    Err(_) => Err(original_error),
+                }
+            }
+        }
+    }
+
+    fn repair_truncated_json(raw: &str) -> Option<String> {
+        let mut expected_closers = Vec::new();
+        let mut in_string = false;
+        let mut escaped = false;
+
+        for ch in raw.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match ch {
+                '"' => in_string = true,
+                '{' => expected_closers.push('}'),
+                '[' => expected_closers.push(']'),
+                '}' | ']' => {
+                    if expected_closers.pop() != Some(ch) {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if in_string || expected_closers.is_empty() {
+            return None;
+        }
+
+        let mut repaired = raw.trim_end().to_string();
+        while let Some(closer) = expected_closers.pop() {
+            repaired.push(closer);
+        }
+        Some(repaired)
     }
 
     /// Remove `<think>...</think>` blocks from model output.
@@ -127,6 +207,10 @@ impl ToolDispatcher for XmlToolDispatcher {
     fn format_results(&self, results: &[ToolExecutionResult]) -> ConversationMessage {
         let mut content = String::new();
         for result in results {
+            if result.is_internal_feedback() {
+                let _ = writeln!(content, "{}", result.output);
+                continue;
+            }
             let status = if result.success { "ok" } else { "error" };
             let _ = writeln!(
                 content,
@@ -134,7 +218,15 @@ impl ToolDispatcher for XmlToolDispatcher {
                 result.name, status, result.output
             );
         }
-        ConversationMessage::Chat(ChatMessage::user(format!("[Tool results]\n{content}")))
+        let label = if results
+            .iter()
+            .all(ToolExecutionResult::is_internal_feedback)
+        {
+            "[System feedback]"
+        } else {
+            "[Tool results]"
+        };
+        ConversationMessage::Chat(ChatMessage::user(format!("{label}\n{content}")))
     }
 
     fn prompt_instructions(&self, _tools: &[Box<dyn Tool>]) -> String {
@@ -299,6 +391,38 @@ mod tests {
             !text.contains("<think>"),
             "think tags should be stripped from text"
         );
+    }
+
+    #[test]
+    fn xml_dispatcher_repairs_truncated_tool_call_json() {
+        let response = ChatResponse {
+            text: Some(
+                "<tool_call>{\"name\":\"call_sub_agent\",\"arguments\":{\"agent_id\":\"agent-1\",\"instruction\":\"write story\"}</tool_call>"
+                    .into(),
+            ),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        };
+        let dispatcher = XmlToolDispatcher;
+        let (_, calls) = dispatcher.parse_response(&response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "call_sub_agent");
+        assert_eq!(calls[0].arguments["instruction"], "write story");
+    }
+
+    #[test]
+    fn xml_dispatcher_malformed_feedback_is_internal() {
+        let response = ChatResponse {
+            text: Some("<tool_call>{\"name\":\"shell\",\"arguments\":</tool_call>".into()),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        };
+        let dispatcher = XmlToolDispatcher;
+        let (_, calls) = dispatcher.parse_response(&response);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].is_internal_feedback());
     }
 
     #[test]

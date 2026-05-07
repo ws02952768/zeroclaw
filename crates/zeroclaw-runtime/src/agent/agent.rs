@@ -666,6 +666,21 @@ impl Agent {
     }
 
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
+        if call.is_internal_feedback() {
+            let output = call
+                .arguments
+                .get("error_message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Your last tool call could not be parsed. Please retry with valid JSON.")
+                .to_string();
+            return ToolExecutionResult {
+                name: call.name.clone(),
+                output,
+                success: false,
+                tool_call_id: call.tool_call_id.clone(),
+            };
+        }
+
         let start = Instant::now();
 
         // ── Hook: before_tool_call (modifying) ──────────────────
@@ -1260,6 +1275,9 @@ impl Agent {
 
             // Notify about each tool call
             for call in &calls {
+                if call.is_internal_feedback() {
+                    continue;
+                }
                 let _ = event_tx
                     .send(TurnEvent::ToolCall {
                         name: call.name.clone(),
@@ -1272,6 +1290,9 @@ impl Agent {
 
             // Notify about each tool result
             for result in &results {
+                if result.is_internal_feedback() {
+                    continue;
+                }
                 let _ = event_tx
                     .send(TurnEvent::ToolResult {
                         name: result.name.clone(),

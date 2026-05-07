@@ -12,7 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph},
 };
-use std::io::{self, IsTerminal};
+use std::io;
 
 use zeroclaw_config::schema::Config;
 use zeroclaw_config::schema::{
