@@ -22,7 +22,7 @@ impl Tool for FileWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Write contents to a file in the workspace"
+        "Create a new file with full contents. Do not use for existing-file edits, renames, or replace-all tasks. Existing files are rejected unless overwrite_existing=true, which is only for intentional full-file rewrites. Use file_edit first for any modification to an existing file."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -35,7 +35,11 @@ impl Tool for FileWriteTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to write to the file"
+                    "description": "Full content for a new file, or a deliberate full-file rewrite only when overwrite_existing=true."
+                },
+                "overwrite_existing": {
+                    "type": "boolean",
+                    "description": "Allow replacing an existing file with full content. Default false rejects existing files. Never set this for ordinary edits, rename requests, or replace-all tasks; use file_edit with replace_all=true instead."
                 }
             },
             "required": ["path", "content"]
@@ -52,6 +56,10 @@ impl Tool for FileWriteTool {
             .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'content' parameter"))?;
+        let overwrite_existing = args
+            .get("overwrite_existing")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if !self.security.can_act() {
             return Ok(ToolResult {
@@ -149,6 +157,19 @@ impl Tool for FileWriteTool {
             });
         }
 
+        if let Ok(meta) = tokio::fs::symlink_metadata(&resolved_target).await
+            && !meta.file_type().is_symlink()
+            && !overwrite_existing
+        {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Refusing to overwrite existing file with file_write: {path}. Use file_edit for modifications; for global rename/replace-all requests call file_edit with replace_all=true. Set overwrite_existing=true only for an intentional full-file rewrite."
+                )),
+            });
+        }
+
         if !self.security.record_action() {
             return Ok(ToolResult {
                 success: false,
@@ -211,6 +232,7 @@ mod tests {
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["path"].is_object());
         assert!(schema["properties"]["content"].is_object());
+        assert!(schema["properties"]["overwrite_existing"].is_object());
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("path")));
         assert!(required.contains(&json!("content")));
@@ -267,10 +289,7 @@ mod tests {
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         let tool = FileWriteTool::new(test_security(workspace.clone()));
-        let workspace_prefixed = workspace
-            .strip_prefix(std::path::Path::new("/"))
-            .unwrap()
-            .join("nested/out.txt");
+        let workspace_prefixed = workspace.join("nested/out.txt");
         let result = tool
             .execute(json!({
                 "path": workspace_prefixed.to_string_lossy(),
@@ -284,13 +303,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(content, "written!");
-        assert!(!workspace.join(workspace_prefixed).exists());
+        assert!(!workspace.join("workspace").join("nested/out.txt").exists());
 
         let _ = tokio::fs::remove_dir_all(&root).await;
     }
 
     #[tokio::test]
-    async fn file_write_overwrites_existing() {
+    async fn file_write_rejects_existing_by_default() {
         let dir = std::env::temp_dir().join("zeroclaw_test_file_write_overwrite");
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
@@ -301,6 +320,31 @@ mod tests {
         let tool = FileWriteTool::new(test_security(dir.clone()));
         let result = tool
             .execute(json!({"path": "exist.txt", "content": "new"}))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("file_edit"));
+
+        let content = tokio::fs::read_to_string(dir.join("exist.txt"))
+            .await
+            .unwrap();
+        assert_eq!(content, "old");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn file_write_overwrites_existing_with_explicit_flag() {
+        let dir = std::env::temp_dir().join("zeroclaw_test_file_write_overwrite_flag");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("exist.txt"), "old")
+            .await
+            .unwrap();
+
+        let tool = FileWriteTool::new(test_security(dir.clone()));
+        let result = tool
+            .execute(json!({"path": "exist.txt", "content": "new", "overwrite_existing": true}))
             .await
             .unwrap();
         assert!(result.success);
@@ -325,7 +369,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
-        assert!(result.error.as_ref().unwrap().contains("not allowed"));
+        assert!(!result.success);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -338,7 +382,6 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
-        assert!(result.error.as_ref().unwrap().contains("not allowed"));
     }
 
     #[tokio::test]

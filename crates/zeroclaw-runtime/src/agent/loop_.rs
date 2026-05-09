@@ -1714,7 +1714,7 @@ pub async fn run_tool_call_loop(
                 let hint = {
                     let raw = match tool_name.as_str() {
                         "shell" => tool_args.get("command").and_then(|v| v.as_str()),
-                        "file_read" | "file_write" => {
+                        "file_read" | "file_write" | "file_edit" => {
                             tool_args.get("path").and_then(|v| v.as_str())
                         }
                         _ => tool_args
@@ -2316,7 +2316,11 @@ pub async fn run(
         ),
         (
             "file_write",
-            "Write file contents. Use when: applying focused edits, scaffolding files, updating docs/code. Don't use when: side effects are unclear or file ownership is uncertain.",
+            "Create new files or intentional full-file rewrites only. Do not use for existing-file edits, rename requests, or replace-all tasks; use file_edit first.",
+        ),
+        (
+            "file_edit",
+            "Preferred for modifying existing files with exact block replacement. Use replace_all=true for global rename/replace-all requests.",
         ),
         (
             "memory_store",
@@ -3254,7 +3258,14 @@ pub async fn process_message(
     let mut tool_descs: Vec<(&str, &str)> = vec![
         ("shell", "Execute terminal commands."),
         ("file_read", "Read file contents."),
-        ("file_write", "Write file contents."),
+        (
+            "file_edit",
+            "Modify existing files with exact block replacement. Use replace_all=true for global rename/replace-all requests.",
+        ),
+        (
+            "file_write",
+            "Create new files only, or intentional full-file rewrites with overwrite_existing=true. Do not use for edits or rename/replace-all tasks.",
+        ),
         ("memory_store", "Save to memory."),
         ("memory_recall", "Search memory."),
         ("memory_forget", "Delete a memory entry."),

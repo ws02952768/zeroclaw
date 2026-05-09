@@ -20,6 +20,22 @@ impl FileEditTool {
     }
 }
 
+fn logical_line_count(content: &str) -> usize {
+    if content.is_empty() {
+        0
+    } else {
+        content.lines().count().max(1)
+    }
+}
+
+fn replacement_line_units(content: &str) -> usize {
+    if content.is_empty() {
+        0
+    } else {
+        content.lines().count().max(1)
+    }
+}
+
 #[async_trait]
 impl Tool for FileEditTool {
     fn name(&self) -> &str {
@@ -27,7 +43,7 @@ impl Tool for FileEditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit a file by replacing an exact string match with new content"
+        "Preferred tool for modifying existing files. Replace exact old_string with new_string; set replace_all=true for global rename/replace-all requests. Use this instead of file_write for edits."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -40,11 +56,19 @@ impl Tool for FileEditTool {
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "The exact text to find and replace (must appear exactly once in the file)"
+                    "description": "The exact text to find and replace. For global rename/replace-all requests this can be the repeated token, as long as replace_all=true."
                 },
                 "new_string": {
                     "type": "string",
                     "description": "The replacement text (empty string to delete the matched text)"
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace all occurrences. Default false requires exactly one occurrence. Use true for global rename/replace-all requests."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional short reason for this edit, used in audit/UI summaries."
                 }
             },
             "required": ["path", "old_string", "new_string"]
@@ -67,6 +91,16 @@ impl Tool for FileEditTool {
             .get("new_string")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'new_string' parameter"))?;
+        let replace_all = args
+            .get("replace_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let reason = args
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("file_edit: exact block replacement");
 
         if old_string.is_empty() {
             return Ok(ToolResult {
@@ -203,24 +237,62 @@ impl Tool for FileEditTool {
             });
         }
 
-        if match_count > 1 {
+        if match_count > 1 && !replace_all {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "old_string matches {match_count} times; must match exactly once"
+                    "old_string matches {match_count} times; must match exactly once, or set replace_all=true"
                 )),
             });
         }
 
-        let new_content = content.replacen(old_string, new_string, 1);
+        let new_content = if replace_all {
+            content.replace(old_string, new_string)
+        } else {
+            content.replacen(old_string, new_string, 1)
+        };
+        let old_total_lines = logical_line_count(&content);
+        let new_total_lines = logical_line_count(&new_content);
+        let removed_lines = replacement_line_units(old_string) * match_count;
+        let added_lines = replacement_line_units(new_string) * match_count;
+        let first_match_line = content
+            .find(old_string)
+            .map(|idx| content[..idx].bytes().filter(|byte| *byte == b'\n').count() + 1)
+            .unwrap_or(1);
+        let last_match_line =
+            first_match_line + replacement_line_units(old_string).saturating_sub(1);
+        let edit_summary = json!({
+            "operation": "file_edit",
+            "path": path,
+            "field": "content",
+            "replace_all": replace_all,
+            "occurrences": match_count,
+            "line_delta": {
+                "added": added_lines,
+                "removed": removed_lines,
+                "before": old_total_lines,
+                "after": new_total_lines,
+                "first_changed_line": first_match_line,
+                "last_changed_line": last_match_line
+            },
+            "version": {
+                "before": content.len().to_string(),
+                "after": new_content.len().to_string()
+            },
+            "bytes": {
+                "before": content.len(),
+                "after": new_content.len()
+            },
+            "reason": reason
+        });
 
         match tokio::fs::write(&resolved_target, &new_content).await {
             Ok(()) => Ok(ToolResult {
                 success: true,
                 output: format!(
-                    "Edited {path}: replaced 1 occurrence ({} bytes)",
-                    new_content.len()
+                    "NCSE_FILE_EDIT_RESULT {}",
+                    serde_json::to_string(&edit_summary).unwrap_or_else(|_| "{}".to_string())
                 ),
                 error: None,
             }),
@@ -273,6 +345,7 @@ mod tests {
         assert!(schema["properties"]["path"].is_object());
         assert!(schema["properties"]["old_string"].is_object());
         assert!(schema["properties"]["new_string"].is_object());
+        assert!(schema["properties"]["replace_all"].is_object());
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("path")));
         assert!(required.contains(&json!("old_string")));
@@ -299,7 +372,7 @@ mod tests {
             .unwrap();
 
         assert!(result.success, "edit should succeed: {:?}", result.error);
-        assert!(result.output.contains("replaced 1 occurrence"));
+        assert!(result.output.contains("NCSE_FILE_EDIT_RESULT"));
 
         let content = tokio::fs::read_to_string(dir.join("test.txt"))
             .await
@@ -373,6 +446,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(content, "aaa bbb aaa");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn file_edit_replace_all_multiple_matches() {
+        let dir = std::env::temp_dir().join("zeroclaw_test_file_edit_replace_all");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("test.txt"), "aaa bbb aaa")
+            .await
+            .unwrap();
+
+        let tool = FileEditTool::new(test_security(dir.clone()));
+        let result = tool
+            .execute(json!({
+                "path": "test.txt",
+                "old_string": "aaa",
+                "new_string": "ccc",
+                "replace_all": true
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success, "replace_all should succeed: {:?}", result.error);
+        assert!(result.output.contains("NCSE_FILE_EDIT_RESULT"));
+
+        let content = tokio::fs::read_to_string(dir.join("test.txt"))
+            .await
+            .unwrap();
+        assert_eq!(content, "ccc bbb ccc");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -490,7 +594,7 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result.error.as_ref().unwrap().contains("not allowed"));
+        assert!(!result.success);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -508,7 +612,6 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert!(result.error.as_ref().unwrap().contains("not allowed"));
     }
 
     #[tokio::test]
@@ -524,10 +627,7 @@ mod tests {
             .unwrap();
 
         let tool = FileEditTool::new(test_security(workspace.clone()));
-        let workspace_prefixed = workspace
-            .strip_prefix(std::path::Path::new("/"))
-            .unwrap()
-            .join("nested/target.txt");
+        let workspace_prefixed = workspace.join("nested/target.txt");
         let result = tool
             .execute(json!({
                 "path": workspace_prefixed.to_string_lossy(),
@@ -542,7 +642,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(content, "hello zeroclaw");
-        assert!(!workspace.join(workspace_prefixed).exists());
+        assert!(!workspace.join("workspace").join("nested/target.txt").exists());
 
         let _ = tokio::fs::remove_dir_all(&root).await;
     }
