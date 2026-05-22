@@ -1947,17 +1947,11 @@ impl Provider for OpenAiCompatibleProvider {
         let merge = self.effective_merge_system(model);
         let effective_messages = Self::flatten_system_messages(messages, merge);
         let effective_messages = self.strip_native_tool_messages(&effective_messages);
-        let api_messages: Vec<Message> = effective_messages
-            .iter()
-            .map(|m| Message {
-                role: m.role.clone(),
-                content: Self::to_message_content(&m.role, &m.content, !merge),
-            })
-            .collect();
+        let native_messages = Self::convert_messages_for_native(&effective_messages, !merge);
 
-        let request = ApiChatRequest {
+        let request = NativeChatRequest {
             model: model.to_string(),
-            messages: api_messages,
+            messages: native_messages,
             temperature,
             stream: Some(false),
             reasoning_effort: self.reasoning_effort_for_model(model),
